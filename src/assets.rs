@@ -5,16 +5,63 @@
 // - evitar glifos que costumam virar emoji (ex.: caveira ☠, carinhas, etc.)
 // - map usa tile_w=2, mas aqui os glifos são de 1 coluna e a UI completa com um espaço.
 
+#[derive(Clone, Copy)]
+pub struct Glyph2 {
+    pub left: &'static str,
+    pub right: &'static str,
+}
+
 // Terreno
-pub const GLYPH_GOAL: &str = "⌂";
-pub const GLYPH_GRASS: &str = "·";
-pub const GLYPH_PATH: &str = "▒";
+pub const GLYPH_GOAL: Glyph2 = Glyph2 {
+    left: "⌂",
+    right: "⌁",
+};
+pub const GLYPH_PATH: [Glyph2; 2] = [
+    Glyph2 {
+        left: "▒",
+        right: "▒",
+    },
+    Glyph2 {
+        left: "▓",
+        right: "▒",
+    },
+];
+pub const GLYPH_GRASS: [Glyph2; 4] = [
+    Glyph2 {
+        left: "·",
+        right: "·",
+    },
+    Glyph2 {
+        left: "˙",
+        right: "·",
+    },
+    Glyph2 {
+        left: "·",
+        right: "ˑ",
+    },
+    Glyph2 {
+        left: "ˑ",
+        right: "˙",
+    },
+];
 
 // Unidades
-pub const GLYPH_TOWER_BASIC: &str = "╬";
-pub const GLYPH_TOWER_SNIPER: &str = "◎";
-pub const GLYPH_TOWER_RAPID: &str = "▣";
-pub const GLYPH_ENEMY: &str = "▲";
+pub const GLYPH_TOWER_BASIC: Glyph2 = Glyph2 {
+    left: "╔",
+    right: "╗",
+};
+pub const GLYPH_TOWER_SNIPER: Glyph2 = Glyph2 {
+    left: "◥",
+    right: "◤",
+};
+pub const GLYPH_TOWER_RAPID: Glyph2 = Glyph2 {
+    left: "╟",
+    right: "╢",
+};
+pub const GLYPH_ENEMY: Glyph2 = Glyph2 {
+    left: "◁",
+    right: "▷",
+};
 
 // Disparo
 pub const GLYPH_PROJECTILE_BASIC: &str = "⠂"; // Braille (não-emoji, bem leve)
@@ -22,7 +69,10 @@ pub const GLYPH_PROJECTILE_SNIPER: &str = "⠁";
 pub const GLYPH_PROJECTILE_RAPID: &str = "⠄";
 
 // VFX: impacto e partículas
-pub const GLYPH_IMPACT_BIG: &str = "⟐";
+pub const GLYPH_IMPACT_BIG: Glyph2 = Glyph2 {
+    left: "⟐",
+    right: "⟐",
+};
 
 // Partículas (quanto menor o TTL, mais "fraco")
 pub const TRAIL: [&str; 4] = ["⠂", "⠄", "⠆", "⠁"]; // trilha

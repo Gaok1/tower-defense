@@ -2,7 +2,7 @@ use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 use std::time::Duration;
 
-use crate::app::{App, ButtonId, HoverAction, TowerKind};
+use crate::app::{App, ButtonId, HoverAction, MapSelectAction, Screen, TowerKind};
 
 pub fn pump(app: &mut App) -> Result<()> {
     if !event::poll(Duration::from_millis(12))? {
@@ -14,17 +14,28 @@ pub fn pump(app: &mut App) -> Result<()> {
             if k.kind != KeyEventKind::Press {
                 return Ok(());
             }
-            match k.code {
-                KeyCode::Esc | KeyCode::Char('q') => app.should_quit = true,
-                KeyCode::Char(' ') => app.handle_button(ButtonId::StartPause),
-                KeyCode::Char('b') => app.handle_button(ButtonId::Build),
-                KeyCode::Char('u') => app.handle_button(ButtonId::Upgrade),
-                KeyCode::Char('s') => app.handle_button(ButtonId::Sell),
-                KeyCode::Char('f') => app.handle_button(ButtonId::Speed),
-                KeyCode::Char('1') => app.toggle_build_kind(TowerKind::Basic),
-                KeyCode::Char('2') => app.toggle_build_kind(TowerKind::Sniper),
-                KeyCode::Char('3') => app.toggle_build_kind(TowerKind::Rapid),
-                _ => {}
+            match app.screen {
+                Screen::MapSelect => match k.code {
+                    KeyCode::Esc | KeyCode::Char('q') => app.should_quit = true,
+                    KeyCode::Left | KeyCode::Char('a') => app.select_prev_map(),
+                    KeyCode::Right | KeyCode::Char('d') => app.select_next_map(),
+                    KeyCode::Enter | KeyCode::Char(' ') => app.start_selected_map(),
+                    _ => {}
+                },
+                Screen::Game => match k.code {
+                    KeyCode::Esc | KeyCode::Char('q') => app.should_quit = true,
+                    KeyCode::Char(' ') => app.handle_button(ButtonId::StartPause),
+                    KeyCode::Char('b') => app.handle_button(ButtonId::Build),
+                    KeyCode::Char('u') => app.handle_button(ButtonId::Upgrade),
+                    KeyCode::Char('s') => app.handle_button(ButtonId::Sell),
+                    KeyCode::Char('f') => app.handle_button(ButtonId::Speed),
+                    KeyCode::Char('1') => app.toggle_build_kind(TowerKind::Basic),
+                    KeyCode::Char('2') => app.toggle_build_kind(TowerKind::Sniper),
+                    KeyCode::Char('3') => app.toggle_build_kind(TowerKind::Rapid),
+                    KeyCode::Char('+') | KeyCode::Char('=') => app.cycle_zoom(1),
+                    KeyCode::Char('-') => app.cycle_zoom(-1),
+                    _ => {}
+                },
             }
         }
         Event::Resize(_, _) => { /* draw recalcula tudo */ }
@@ -34,9 +45,18 @@ pub fn pump(app: &mut App) -> Result<()> {
                 app.ui.hover_cell = map_cell_at(app, m.column, m.row);
                 app.ui.hover_action = hit_test_action(app, m.column, m.row);
                 app.ui.hover_build_kind = hit_test_build(app, m.column, m.row);
+                app.ui.hover_map_select = hit_test_map_select(app, m.column, m.row);
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                if let Some(btn) = hit_test_button(app, m.column, m.row) {
+                if app.screen == Screen::MapSelect {
+                    if let Some(action) = hit_test_map_select(app, m.column, m.row) {
+                        match action {
+                            MapSelectAction::Prev => app.select_prev_map(),
+                            MapSelectAction::Next => app.select_next_map(),
+                            MapSelectAction::Start => app.start_selected_map(),
+                        }
+                    }
+                } else if let Some(btn) = hit_test_button(app, m.column, m.row) {
                     app.handle_button(btn);
                 } else if let Some(act) = hit_test_action(app, m.column, m.row) {
                     match act {
@@ -100,6 +120,9 @@ fn hit_test_build(app: &App, x: u16, y: u16) -> Option<TowerKind> {
 }
 
 fn map_cell_at(app: &App, x: u16, y: u16) -> Option<(u16, u16)> {
+    if app.screen != Screen::Game {
+        return None;
+    }
     let inner = app.ui.hit.map_inner;
     if inner.width == 0 || inner.height == 0 {
         return None;
@@ -128,4 +151,20 @@ fn map_cell_at(app: &App, x: u16, y: u16) -> Option<(u16, u16)> {
 
 fn contains(r: ratatui::layout::Rect, x: u16, y: u16) -> bool {
     x >= r.x && y >= r.y && x < r.x + r.width && y < r.y + r.height
+}
+
+fn hit_test_map_select(app: &App, x: u16, y: u16) -> Option<MapSelectAction> {
+    if app.screen != Screen::MapSelect {
+        return None;
+    }
+    if contains(app.ui.hit.map_select_left, x, y) {
+        return Some(MapSelectAction::Prev);
+    }
+    if contains(app.ui.hit.map_select_right, x, y) {
+        return Some(MapSelectAction::Next);
+    }
+    if contains(app.ui.hit.map_select_start, x, y) {
+        return Some(MapSelectAction::Start);
+    }
+    None
 }

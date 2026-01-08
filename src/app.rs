@@ -7,6 +7,12 @@ pub enum LayoutMode {
     Compact,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Screen {
+    MapSelect,
+    Game,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ButtonId {
     StartPause,
@@ -15,6 +21,13 @@ pub enum ButtonId {
     Sell,
     Speed,
     Quit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapSelectAction {
+    Prev,
+    Next,
+    Start,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +41,9 @@ pub struct UiHitboxes {
     pub buttons: [Rect; 6],
     pub inspector_upgrade: Rect, // linha clicável no inspector
     pub build_options: [Rect; 3],
+    pub map_select_left: Rect,
+    pub map_select_right: Rect,
+    pub map_select_start: Rect,
 }
 
 impl Default for UiHitboxes {
@@ -37,13 +53,16 @@ impl Default for UiHitboxes {
             buttons: [Rect::new(0, 0, 0, 0); 6],
             inspector_upgrade: Rect::new(0, 0, 0, 0),
             build_options: [Rect::new(0, 0, 0, 0); 3],
+            map_select_left: Rect::new(0, 0, 0, 0),
+            map_select_right: Rect::new(0, 0, 0, 0),
+            map_select_start: Rect::new(0, 0, 0, 0),
         }
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct MapViewport {
-    pub tile_w: u16, // colunas por célula (2)
+    pub tile_w: u16, // colunas por célula (base 2)
     pub tile_h: u16, // linhas por célula (1)
     pub view_x: u16,
     pub view_y: u16,
@@ -71,8 +90,10 @@ pub struct UiState {
     pub hover_cell: Option<(u16, u16)>,
     pub hover_action: Option<HoverAction>,
     pub hover_build_kind: Option<TowerKind>,
+    pub hover_map_select: Option<MapSelectAction>,
     pub hit: UiHitboxes,
     pub viewport: MapViewport,
+    pub zoom: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,6 +200,7 @@ pub struct GameState {
 #[derive(Debug)]
 pub struct App {
     pub should_quit: bool,
+    pub screen: Screen,
 
     tick_rate: Duration,
     last_tick: Instant,
@@ -188,10 +210,12 @@ pub struct App {
 
     pub ui: UiState,
     pub game: GameState,
+    maps: Vec<MapSpec>,
+    map_index: usize,
 }
 
 #[derive(Debug, Clone)]
-struct MapSpec {
+pub struct MapSpec {
     name: &'static str,
     grid_w: u16,
     grid_h: u16,
@@ -201,14 +225,14 @@ struct MapSpec {
 impl App {
     pub fn new() -> Self {
         let mut rng = 0xC0FFEE_u64 ^ (Instant::now().elapsed().as_nanos() as u64);
-        let map = Self::pick_map(&mut rng);
-        let grid_w = map.grid_w;
-        let grid_h = map.grid_h;
-        let path = map.path;
-        let selected_cell = Self::first_buildable(grid_w, grid_h, &path);
+        let maps = Self::build_maps();
+        let map_index = 0usize;
+        let map = maps[map_index].clone();
+        let selected_cell = Self::first_buildable(map.grid_w, map.grid_h, &map.path);
 
         let mut app = Self {
             should_quit: false,
+            screen: Screen::MapSelect,
             // tick mais curto -> animações mais suaves
             tick_rate: Duration::from_millis(50),
             last_tick: Instant::now(),
@@ -219,8 +243,10 @@ impl App {
                 hover_cell: None,
                 hover_action: None,
                 hover_build_kind: None,
+                hover_map_select: None,
                 hit: UiHitboxes::default(),
                 viewport: MapViewport::default(),
+                zoom: 2,
             },
             game: GameState {
                 running: false,
@@ -228,12 +254,12 @@ impl App {
                 money: 250,
                 lives: 20,
                 wave: 1,
-                grid_w,
-                grid_h,
+                grid_w: map.grid_w,
+                grid_h: map.grid_h,
                 selected_cell: Some(selected_cell),
                 build_kind: None,
                 map_name: map.name.to_string(),
-                path,
+                path: map.path,
                 towers: vec![Tower {
                     x: selected_cell.0,
                     y: selected_cell.1,
@@ -247,6 +273,8 @@ impl App {
                 particles: vec![],
                 money_cd: 0,
             },
+            maps,
+            map_index,
         };
 
         app.spawn_wave();
@@ -264,7 +292,11 @@ impl App {
     pub fn on_tick_if_due(&mut self) {
         if self.last_tick.elapsed() >= self.tick_rate {
             self.last_tick = Instant::now();
-            self.on_tick();
+            if self.screen == Screen::Game {
+                self.on_tick();
+            } else {
+                self.tick_fx();
+            }
         }
     }
 
@@ -700,6 +732,80 @@ impl App {
         // tick_rate fica fixo pra manter animações consistentes
     }
 
+    pub fn cycle_zoom(&mut self, delta: i16) {
+        let next = (self.ui.zoom as i16 + delta).clamp(1, 3) as u16;
+        self.ui.zoom = next;
+    }
+
+    pub fn maps_len(&self) -> usize {
+        self.maps.len()
+    }
+
+    pub fn selected_map_index(&self) -> usize {
+        self.map_index
+    }
+
+    pub fn selected_map(&self) -> &MapSpec {
+        &self.maps[self.map_index]
+    }
+
+    pub fn select_prev_map(&mut self) {
+        if self.maps.is_empty() {
+            return;
+        }
+        if self.map_index == 0 {
+            self.map_index = self.maps.len() - 1;
+        } else {
+            self.map_index -= 1;
+        }
+    }
+
+    pub fn select_next_map(&mut self) {
+        if self.maps.is_empty() {
+            return;
+        }
+        self.map_index = (self.map_index + 1) % self.maps.len();
+    }
+
+    pub fn start_selected_map(&mut self) {
+        let map = self.selected_map().clone();
+        let selected_cell = Self::first_buildable(map.grid_w, map.grid_h, &map.path);
+
+        self.game = GameState {
+            running: false,
+            speed: 1,
+            money: 250,
+            lives: 20,
+            wave: 1,
+            grid_w: map.grid_w,
+            grid_h: map.grid_h,
+            selected_cell: Some(selected_cell),
+            build_kind: None,
+            map_name: map.name.to_string(),
+            path: map.path,
+            towers: vec![Tower {
+                x: selected_cell.0,
+                y: selected_cell.1,
+                kind: TowerKind::Basic,
+                level: 1,
+                cooldown: 0,
+            }],
+            enemies: vec![],
+            projectiles: vec![],
+            impacts: vec![],
+            particles: vec![],
+            money_cd: 0,
+        };
+
+        self.ui.hover_cell = None;
+        self.ui.hover_action = None;
+        self.ui.hover_build_kind = None;
+        self.ui.hover_button = None;
+        self.ui.viewport = MapViewport::default();
+        self.screen = Screen::Game;
+        self.spawn_wave();
+    }
+
     fn try_build(&mut self) {
         let Some(kind) = self.game.build_kind else {
             return;
@@ -868,12 +974,6 @@ impl App {
         };
     }
 
-    fn pick_map(rng: &mut u64) -> MapSpec {
-        let maps = Self::build_maps();
-        let idx = (Self::rand_u32_from(rng) as usize) % maps.len();
-        maps[idx].clone()
-    }
-
     fn build_maps() -> Vec<MapSpec> {
         vec![
             Self::map_serpentine(),
@@ -958,14 +1058,5 @@ impl App {
             }
         }
         (1, 1)
-    }
-
-    fn rand_u32_from(rng: &mut u64) -> u32 {
-        let mut x = *rng;
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        *rng = x;
-        ((x.wrapping_mul(0x2545F4914F6CDD1D_u64)) >> 32) as u32
     }
 }
