@@ -6,6 +6,7 @@
 // - map usa tile_w=2, mas aqui os glifos são de 1 coluna e a UI completa com um espaço.
 
 // Terreno
+pub const GLYPH_GOAL: &str = "⌂";
 pub const GLYPH_GRASS: &str = "·";
 pub const GLYPH_PATH: &str = "▒";
 

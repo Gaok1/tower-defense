@@ -21,9 +21,9 @@ pub fn pump(app: &mut App) -> Result<()> {
                 KeyCode::Char('u') => app.handle_button(ButtonId::Upgrade),
                 KeyCode::Char('s') => app.handle_button(ButtonId::Sell),
                 KeyCode::Char('f') => app.handle_button(ButtonId::Speed),
-                KeyCode::Char('1') => app.game.build_kind = TowerKind::Basic,
-                KeyCode::Char('2') => app.game.build_kind = TowerKind::Sniper,
-                KeyCode::Char('3') => app.game.build_kind = TowerKind::Rapid,
+                KeyCode::Char('1') => app.toggle_build_kind(TowerKind::Basic),
+                KeyCode::Char('2') => app.toggle_build_kind(TowerKind::Sniper),
+                KeyCode::Char('3') => app.toggle_build_kind(TowerKind::Rapid),
                 _ => {}
             }
         }
@@ -43,9 +43,16 @@ pub fn pump(app: &mut App) -> Result<()> {
                         HoverAction::UpgradePreview => app.handle_button(ButtonId::Upgrade),
                     }
                 } else if let Some(kind) = hit_test_build(app, m.column, m.row) {
-                    app.game.build_kind = kind;
+                    app.toggle_build_kind(kind);
                 } else if let Some(cell) = map_cell_at(app, m.column, m.row) {
-                    app.game.selected_cell = Some(cell);
+                    // Toggle apenas para torre: clicar de novo deseleciona (e some o range).
+                    if app.game.selected_cell == Some(cell)
+                        && app.tower_index_at(cell.0, cell.1).is_some()
+                    {
+                        app.game.selected_cell = None;
+                    } else {
+                        app.game.selected_cell = Some(cell);
+                    }
                 }
             }
             _ => {}

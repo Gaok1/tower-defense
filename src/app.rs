@@ -75,7 +75,7 @@ pub struct UiState {
     pub viewport: MapViewport,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TowerKind {
     Basic,
     Sniper,
@@ -161,7 +161,7 @@ pub struct GameState {
     pub grid_h: u16,
 
     pub selected_cell: Option<(u16, u16)>,
-    pub build_kind: TowerKind,
+    pub build_kind: Option<TowerKind>,
     pub map_name: String,
 
     pub path: Vec<(u16, u16)>,
@@ -231,7 +231,7 @@ impl App {
                 grid_w,
                 grid_h,
                 selected_cell: Some(selected_cell),
-                build_kind: TowerKind::Basic,
+                build_kind: None,
                 map_name: map.name.to_string(),
                 path,
                 towers: vec![Tower {
@@ -656,8 +656,9 @@ impl App {
         let tuning = Self::tower_tuning(t.kind);
         let lvl = t.level.max(1) as i32;
         let attack = tuning.base_attack + (lvl - 1) * tuning.attack_step;
-        let range = tuning.base_range + (t.level.saturating_sub(1) / tuning.range_every) as u16;
-        let cd_drop = ((t.level.saturating_sub(1) / tuning.cd_drop_every) as i32) * tuning.cd_drop;
+        let lvl_steps = u16::from(t.level.saturating_sub(1));
+        let range = tuning.base_range + (lvl_steps / tuning.range_every);
+        let cd_drop = ((lvl_steps / tuning.cd_drop_every) as i32) * tuning.cd_drop;
         let fire_cd = (tuning.base_cd - cd_drop).clamp(tuning.cd_min, tuning.cd_max) as u16;
 
         Stats {
@@ -700,6 +701,9 @@ impl App {
     }
 
     fn try_build(&mut self) {
+        let Some(kind) = self.game.build_kind else {
+            return;
+        };
         let Some((x, y)) = self.game.selected_cell else {
             return;
         };
@@ -709,7 +713,7 @@ impl App {
         if self.tower_index_at(x, y).is_some() {
             return;
         }
-        let cost = Self::tower_cost(self.game.build_kind);
+        let cost = Self::tower_cost(kind);
         if self.game.money < cost {
             return;
         }
@@ -717,10 +721,11 @@ impl App {
         self.game.towers.push(Tower {
             x,
             y,
-            kind: self.game.build_kind,
+            kind,
             level: 1,
             cooldown: 0,
         });
+        self.game.build_kind = None;
     }
 
     fn try_upgrade(&mut self) {
@@ -840,19 +845,27 @@ impl App {
         }
     }
 
-    pub fn build_preview_stats(&self) -> Stats {
+    pub fn build_preview_stats(&self) -> Option<Stats> {
+        let kind = self.game.build_kind?;
         let t = Tower {
             x: 0,
             y: 0,
-            kind: self.game.build_kind,
+            kind,
             level: 1,
             cooldown: 0,
         };
-        Self::tower_stats(&t)
+        Some(Self::tower_stats(&t))
     }
 
     pub fn available_towers() -> [TowerKind; 3] {
         [TowerKind::Basic, TowerKind::Sniper, TowerKind::Rapid]
+    }
+
+    pub fn toggle_build_kind(&mut self, kind: TowerKind) {
+        self.game.build_kind = match self.game.build_kind {
+            Some(current) if current == kind => None,
+            _ => Some(kind),
+        };
     }
 
     fn pick_map(rng: &mut u64) -> MapSpec {

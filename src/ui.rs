@@ -297,69 +297,11 @@ fn compute_viewport(app: &App, inner: Rect) -> MapViewport {
 fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(7),
-            Constraint::Length(6),
-            Constraint::Length(7),
-            Constraint::Min(8),
-        ])
+        .constraints([Constraint::Length(8), Constraint::Min(8)])
         .split(area);
 
-    draw_stats_panel(f, app, rows[0]);
-    draw_flow_panel(f, app, rows[1]);
-    draw_build_panel(f, app, rows[2]);
-    draw_inspector_panel(f, app, rows[3]);
-}
-
-fn draw_stats_panel(f: &mut Frame, app: &App, area: Rect) {
-    let block = panel_block("Stats");
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    let lines = vec![
-        Line::from(vec![
-            Span::styled("Money", Style::default().fg(text_dim())),
-            Span::raw(": "),
-            Span::styled(format!("$ {}", app.game.money), Style::default().fg(warn())),
-        ]),
-        Line::from(vec![
-            Span::styled("Lives", Style::default().fg(text_dim())),
-            Span::raw(": "),
-            Span::styled(format!("{}", app.game.lives), Style::default().fg(danger())),
-        ]),
-        Line::from(vec![
-            Span::styled("Towers", Style::default().fg(text_dim())),
-            Span::raw(": "),
-            Span::styled(
-                format!("{}", app.game.towers.len()),
-                Style::default().fg(accent()),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Enemies", Style::default().fg(text_dim())),
-            Span::raw(": "),
-            Span::styled(
-                format!("{}", app.game.enemies.iter().filter(|e| e.hp > 0).count()),
-                Style::default().fg(Color::Red),
-            ),
-        ]),
-    ];
-
-    f.render_widget(
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: true })
-            .style(Style::default().fg(Color::White).bg(bg())),
-        inner,
-    );
-}
-
-fn draw_flow_panel(f: &mut Frame, app: &App, area: Rect) {
-    let pct = app.wave_progress_percent();
-    let g = Gauge::default()
-        .block(panel_block("Path Progress"))
-        .gauge_style(Style::default().fg(accent()))
-        .percent(pct);
-    f.render_widget(g, area);
+    draw_build_panel(f, app, rows[0]);
+    draw_inspector_panel(f, app, rows[1]);
 }
 
 fn draw_build_panel(f: &mut Frame, app: &mut App, area: Rect) {
@@ -380,7 +322,7 @@ fn draw_build_panel(f: &mut Frame, app: &mut App, area: Rect) {
     for (i, kind) in towers.iter().enumerate() {
         app.ui.hit.build_options[i] = rows[i];
 
-        let is_active = app.game.build_kind == *kind;
+        let is_active = app.game.build_kind == Some(*kind);
         let is_hover = app.ui.hover_build_kind == Some(*kind);
         let label = format!(
             "{}. {:<6} ${}",
@@ -483,40 +425,57 @@ fn draw_inspector_panel(f: &mut Frame, app: &mut App, area: Rect) {
         stats_lines.push(Line::from(""));
         stats_lines.push(Line::from(vec![
             Span::styled("Build", Style::default().fg(text_dim())),
-            Span::raw(format!(": {}   ", App::tower_cost(app.game.build_kind))),
+            Span::raw(format!(
+                ": {}   ",
+                app.game
+                    .build_kind
+                    .map(App::tower_cost)
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            )),
             Span::styled("Upgrade", Style::default().fg(text_dim())),
             Span::raw(format!(": {}   ", App::tower_upgrade_cost(t.kind))),
             Span::styled("Sell", Style::default().fg(text_dim())),
             Span::raw(": +20"),
         ]));
     } else {
-        let preview = app.build_preview_stats();
         stats_lines.push(Line::from("No tower selected."));
-        stats_lines.push(Line::from(vec![
-            Span::styled("Build", Style::default().fg(text_dim())),
-            Span::raw(": "),
-            Span::styled(
-                tower_kind_label(app.game.build_kind),
-                Style::default()
-                    .fg(tower_kind_color(app.game.build_kind))
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]));
-        stats_lines.push(Line::from(""));
-        stats_lines.push(Line::from(vec![
-            Span::styled("Attack", Style::default().fg(text_dim())),
-            Span::raw(format!(": {}", preview.attack)),
-            Span::raw("   "),
-            Span::styled("Range", Style::default().fg(text_dim())),
-            Span::raw(format!(": {}", preview.range)),
-            Span::raw("   "),
-            Span::styled("CD", Style::default().fg(text_dim())),
-            Span::raw(format!(": {}", preview.fire_cd)),
-        ]));
-        stats_lines.push(Line::from(Span::styled(
-            "Select grass tile and press Build.",
-            Style::default().fg(text_dim()),
-        )));
+        if let Some(kind) = app.game.build_kind {
+            stats_lines.push(Line::from(vec![
+                Span::styled("Build", Style::default().fg(text_dim())),
+                Span::raw(": "),
+                Span::styled(
+                    tower_kind_label(kind),
+                    Style::default()
+                        .fg(tower_kind_color(kind))
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+
+            if let Some(preview) = app.build_preview_stats() {
+                stats_lines.push(Line::from(""));
+                stats_lines.push(Line::from(vec![
+                    Span::styled("Attack", Style::default().fg(text_dim())),
+                    Span::raw(format!(": {}", preview.attack)),
+                    Span::raw("   "),
+                    Span::styled("Range", Style::default().fg(text_dim())),
+                    Span::raw(format!(": {}", preview.range)),
+                    Span::raw("   "),
+                    Span::styled("CD", Style::default().fg(text_dim())),
+                    Span::raw(format!(": {}", preview.fire_cd)),
+                ]));
+            }
+
+            stats_lines.push(Line::from(Span::styled(
+                "Select grass tile and press Build.",
+                Style::default().fg(text_dim()),
+            )));
+        } else {
+            stats_lines.push(Line::from(Span::styled(
+                "Select a tower type (1/2/3) to build.",
+                Style::default().fg(text_dim()),
+            )));
+        }
     }
 
     f.render_widget(
@@ -575,9 +534,17 @@ fn draw_inspector_panel(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(
         Paragraph::new(format!(
             "Build [B] ({}) — grass",
-            App::tower_cost(app.game.build_kind)
+            app.game
+                .build_kind
+                .map(App::tower_cost)
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "-".to_string())
         ))
-        .style(Style::default().fg(good()).bg(bg()))
+        .style(if app.game.build_kind.is_some() {
+            Style::default().fg(good()).bg(bg())
+        } else {
+            Style::default().fg(text_dim()).bg(bg())
+        })
         .alignment(Alignment::Left),
         action_rows[2],
     );
@@ -653,8 +620,12 @@ fn draw_compact_info(f: &mut Frame, app: &App, area: Rect) {
         Line::from(sel),
         Line::from(format!(
             "Build: {} ({}). Switch: 1 Basic • 2 Sniper • 3 Rapid",
-            tower_kind_label(app.game.build_kind),
-            App::tower_cost(app.game.build_kind)
+            app.game.build_kind.map(tower_kind_label).unwrap_or("-"),
+            app.game
+                .build_kind
+                .map(App::tower_cost)
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "-".to_string())
         )),
         Line::from(Span::styled(
             "Space start/pause • B build • U upgrade • S sell • F speed • Q quit",
@@ -739,6 +710,23 @@ impl<'a> Widget for MapWidget<'a> {
         let app = self.app;
         let vp = app.ui.viewport;
         let range_focus = range_focus(app);
+        let goal = app.game.path.last().copied();
+
+        let cell_bg = |cell_x: u16, cell_y: u16| -> Color {
+            if app.game.selected_cell == Some((cell_x, cell_y)) {
+                Color::Blue
+            } else if app.ui.hover_cell == Some((cell_x, cell_y)) {
+                Color::DarkGray
+            } else if let Some((rx, ry, range)) = range_focus {
+                if manhattan(cell_x, cell_y, rx, ry) == range {
+                    Color::Blue
+                } else {
+                    bg()
+                }
+            } else {
+                bg()
+            }
+        };
 
         if area.width == 0 || area.height == 0 || vp.vis_w == 0 || vp.vis_h == 0 {
             return;
@@ -771,6 +759,14 @@ impl<'a> Widget for MapWidget<'a> {
                 if app.is_path(cell_x, cell_y) {
                     sym = assets::GLYPH_PATH;
                     style = Style::default().fg(Color::Gray).bg(bg());
+                }
+
+                if goal == Some((cell_x, cell_y)) {
+                    sym = assets::GLYPH_GOAL;
+                    style = Style::default()
+                        .fg(Color::LightMagenta)
+                        .bg(bg())
+                        .add_modifier(Modifier::BOLD);
                 }
 
                 if let Some(ti) = app.tower_index_at(cell_x, cell_y) {
@@ -825,8 +821,8 @@ impl<'a> Widget for MapWidget<'a> {
                 } else if is_hover {
                     style = style.bg(Color::DarkGray).fg(Color::Black);
                 } else if let Some((rx, ry, range)) = range_focus {
-                    if manhattan(cell_x, cell_y, rx, ry) <= range {
-                        style = style.bg(Color::DarkBlue);
+                    if manhattan(cell_x, cell_y, rx, ry) == range {
+                        style = style.bg(Color::Blue);
                     }
                 }
 
@@ -857,6 +853,7 @@ impl<'a> Widget for MapWidget<'a> {
             }
             let sx = area.x + gx * vp.tile_w;
             let sy = area.y + gy * vp.tile_h;
+            let bg_color = cell_bg(cx, cy);
 
             let (sym, color) = match p.kind {
                 TowerKind::Basic => (assets::GLYPH_PROJECTILE_BASIC, Color::LightMagenta),
@@ -865,10 +862,10 @@ impl<'a> Widget for MapWidget<'a> {
             };
             let style = Style::default()
                 .fg(color)
-                .bg(bg())
+                .bg(bg_color)
                 .add_modifier(Modifier::BOLD);
-            if sx < area.right() && sy < area.bottom() {
-                buf.get_mut(sx, sy).set_symbol(sym).set_style(style);
+            if sx + 1 < area.right() && sy < area.bottom() {
+                buf.get_mut(sx + 1, sy).set_symbol(sym).set_style(style);
             }
         }
 
@@ -889,10 +886,12 @@ impl<'a> Widget for MapWidget<'a> {
             }
             let sx = area.x + gx * vp.tile_w;
             let sy = area.y + gy * vp.tile_h;
+            let bg_color = cell_bg(cx, cy);
 
             let (sym, style) = particle_visual(p.kind, p.ttl);
-            if sx < area.right() && sy < area.bottom() {
-                buf.get_mut(sx, sy).set_symbol(sym).set_style(style);
+            let style = style.bg(bg_color);
+            if sx + 1 < area.right() && sy < area.bottom() {
+                buf.get_mut(sx + 1, sy).set_symbol(sym).set_style(style);
             }
         }
     }
@@ -935,6 +934,7 @@ fn tower_kind_color(kind: TowerKind) -> Color {
 }
 
 fn range_focus(app: &App) -> Option<(u16, u16, u16)> {
+    // Torre em foco: mostra range dela.
     if let Some(t) = app.selected_tower() {
         let stats = App::tower_stats(t);
         return Some((t.x, t.y, stats.range));
@@ -945,7 +945,7 @@ fn range_focus(app: &App) -> Option<(u16, u16, u16)> {
         return None;
     }
 
-    let preview = app.build_preview_stats();
+    let preview = app.build_preview_stats()?;
     Some((x, y, preview.range))
 }
 
