@@ -216,15 +216,15 @@ pub struct App {
 
 #[derive(Debug, Clone)]
 pub struct MapSpec {
-    pub name: &'static str,
-    pub grid_w: u16,
-    pub grid_h: u16,
-    pub path: Vec<(u16, u16)>,
+    name: &'static str,
+    grid_w: u16,
+    grid_h: u16,
+    path: Vec<(u16, u16)>,
 }
 
 impl App {
     pub fn new() -> Self {
-        let rng = 0xC0FFEE_u64 ^ (Instant::now().elapsed().as_nanos() as u64);
+        let mut rng = 0xC0FFEE_u64 ^ (Instant::now().elapsed().as_nanos() as u64);
         let maps = Self::build_maps();
         let map_index = 0usize;
         let map = maps[map_index].clone();
