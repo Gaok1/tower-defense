@@ -1,10 +1,8 @@
 use anyhow::Result;
-use crossterm::event::{
-    self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind,
-};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 use std::time::Duration;
 
-use crate::app::{App, ButtonId, HoverAction};
+use crate::app::{App, ButtonId, HoverAction, TowerKind};
 
 pub fn pump(app: &mut App) -> Result<()> {
     if !event::poll(Duration::from_millis(12))? {
@@ -23,6 +21,9 @@ pub fn pump(app: &mut App) -> Result<()> {
                 KeyCode::Char('u') => app.handle_button(ButtonId::Upgrade),
                 KeyCode::Char('s') => app.handle_button(ButtonId::Sell),
                 KeyCode::Char('f') => app.handle_button(ButtonId::Speed),
+                KeyCode::Char('1') => app.game.build_kind = TowerKind::Basic,
+                KeyCode::Char('2') => app.game.build_kind = TowerKind::Sniper,
+                KeyCode::Char('3') => app.game.build_kind = TowerKind::Rapid,
                 _ => {}
             }
         }
@@ -32,6 +33,7 @@ pub fn pump(app: &mut App) -> Result<()> {
                 app.ui.hover_button = hit_test_button(app, m.column, m.row);
                 app.ui.hover_cell = map_cell_at(app, m.column, m.row);
                 app.ui.hover_action = hit_test_action(app, m.column, m.row);
+                app.ui.hover_build_kind = hit_test_build(app, m.column, m.row);
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(btn) = hit_test_button(app, m.column, m.row) {
@@ -40,6 +42,8 @@ pub fn pump(app: &mut App) -> Result<()> {
                     match act {
                         HoverAction::UpgradePreview => app.handle_button(ButtonId::Upgrade),
                     }
+                } else if let Some(kind) = hit_test_build(app, m.column, m.row) {
+                    app.game.build_kind = kind;
                 } else if let Some(cell) = map_cell_at(app, m.column, m.row) {
                     app.game.selected_cell = Some(cell);
                 }
@@ -73,6 +77,17 @@ fn hit_test_button(app: &App, x: u16, y: u16) -> Option<ButtonId> {
 fn hit_test_action(app: &App, x: u16, y: u16) -> Option<HoverAction> {
     if contains(app.ui.hit.inspector_upgrade, x, y) {
         return Some(HoverAction::UpgradePreview);
+    }
+    None
+}
+
+fn hit_test_build(app: &App, x: u16, y: u16) -> Option<TowerKind> {
+    let rects = app.ui.hit.build_options;
+    let ids = [TowerKind::Basic, TowerKind::Sniper, TowerKind::Rapid];
+    for (i, id) in ids.iter().enumerate() {
+        if contains(rects[i], x, y) {
+            return Some(*id);
+        }
     }
     None
 }

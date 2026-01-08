@@ -11,10 +11,14 @@ pub const GLYPH_PATH: &str = "▒";
 
 // Unidades
 pub const GLYPH_TOWER_BASIC: &str = "╬";
+pub const GLYPH_TOWER_SNIPER: &str = "◎";
+pub const GLYPH_TOWER_RAPID: &str = "▣";
 pub const GLYPH_ENEMY: &str = "▲";
 
 // Disparo
-pub const GLYPH_PROJECTILE: &str = "⠂"; // Braille (não-emoji, bem leve)
+pub const GLYPH_PROJECTILE_BASIC: &str = "⠂"; // Braille (não-emoji, bem leve)
+pub const GLYPH_PROJECTILE_SNIPER: &str = "⠁";
+pub const GLYPH_PROJECTILE_RAPID: &str = "⠄";
 
 // VFX: impacto e partículas
 pub const GLYPH_IMPACT_BIG: &str = "⟐";
