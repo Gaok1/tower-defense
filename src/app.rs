@@ -27,6 +27,7 @@ pub struct UiHitboxes {
     pub map_inner: Rect,
     pub buttons: [Rect; 6],
     pub inspector_upgrade: Rect, // linha clicável no inspector
+    pub build_options: [Rect; 3],
 }
 
 impl Default for UiHitboxes {
@@ -35,6 +36,7 @@ impl Default for UiHitboxes {
             map_inner: Rect::new(0, 0, 0, 0),
             buttons: [Rect::new(0, 0, 0, 0); 6],
             inspector_upgrade: Rect::new(0, 0, 0, 0),
+            build_options: [Rect::new(0, 0, 0, 0); 3],
         }
     }
 }
@@ -68,6 +70,7 @@ pub struct UiState {
     pub hover_button: Option<ButtonId>,
     pub hover_cell: Option<(u16, u16)>,
     pub hover_action: Option<HoverAction>,
+    pub hover_build_kind: Option<TowerKind>,
     pub hit: UiHitboxes,
     pub viewport: MapViewport,
 }
@@ -75,6 +78,8 @@ pub struct UiState {
 #[derive(Debug, Clone, Copy)]
 pub enum TowerKind {
     Basic,
+    Sniper,
+    Rapid,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -102,6 +107,7 @@ pub struct Projectile {
     pub ttl: u16,
     pub damage: i32,
     pub step_cd: u16, // ticks até andar 1 tile (pra dar tempo de ver FX)
+    pub kind: TowerKind,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -155,6 +161,8 @@ pub struct GameState {
     pub grid_h: u16,
 
     pub selected_cell: Option<(u16, u16)>,
+    pub build_kind: TowerKind,
+    pub map_name: String,
 
     pub path: Vec<(u16, u16)>,
     pub towers: Vec<Tower>,
@@ -182,34 +190,35 @@ pub struct App {
     pub game: GameState,
 }
 
+#[derive(Debug, Clone)]
+struct MapSpec {
+    name: &'static str,
+    grid_w: u16,
+    grid_h: u16,
+    path: Vec<(u16, u16)>,
+}
+
 impl App {
     pub fn new() -> Self {
-        let grid_w = 30;
-        let grid_h = 16;
-
-        // Path em “S”
-        let mut path = Vec::new();
-        for x in 1..(grid_w - 1) {
-            path.push((x, 3));
-        }
-        for y in 3..(grid_h - 2) {
-            path.push((grid_w - 2, y));
-        }
-        for x in (2..(grid_w - 1)).rev() {
-            path.push((x, grid_h - 3));
-        }
+        let mut rng = 0xC0FFEE_u64 ^ (Instant::now().elapsed().as_nanos() as u64);
+        let map = Self::pick_map(&mut rng);
+        let grid_w = map.grid_w;
+        let grid_h = map.grid_h;
+        let path = map.path;
+        let selected_cell = Self::first_buildable(grid_w, grid_h, &path);
 
         let mut app = Self {
             should_quit: false,
             // tick mais curto -> animações mais suaves
             tick_rate: Duration::from_millis(50),
             last_tick: Instant::now(),
-            rng: 0xC0FFEE_u64 ^ (Instant::now().elapsed().as_nanos() as u64),
+            rng,
             ui: UiState {
                 mode: LayoutMode::Wide,
                 hover_button: None,
                 hover_cell: None,
                 hover_action: None,
+                hover_build_kind: None,
                 hit: UiHitboxes::default(),
                 viewport: MapViewport::default(),
             },
@@ -221,11 +230,13 @@ impl App {
                 wave: 1,
                 grid_w,
                 grid_h,
-                selected_cell: Some((6, 6)),
+                selected_cell: Some(selected_cell),
+                build_kind: TowerKind::Basic,
+                map_name: map.name.to_string(),
                 path,
                 towers: vec![Tower {
-                    x: 6,
-                    y: 6,
+                    x: selected_cell.0,
+                    y: selected_cell.1,
                     kind: TowerKind::Basic,
                     level: 1,
                     cooldown: 0,
@@ -334,7 +345,7 @@ impl App {
 
     fn tick_towers(&mut self) {
         let sp = self.game.speed.max(1) as u16;
-        let mut spawns: Vec<(u16, u16, u16, u16, i32)> = Vec::new();
+        let mut spawns: Vec<(u16, u16, u16, u16, i32, TowerKind)> = Vec::new();
 
         for t in &mut self.game.towers {
             if t.cooldown > sp {
@@ -354,12 +365,12 @@ impl App {
                 continue;
             };
 
-            spawns.push((t.x, t.y, tx, ty, stats.attack));
+            spawns.push((t.x, t.y, tx, ty, stats.attack, t.kind));
             t.cooldown = stats.fire_cd;
         }
 
-        for (from_x, from_y, to_x, to_y, dmg) in spawns {
-            self.spawn_projectile(from_x, from_y, to_x, to_y, dmg);
+        for (from_x, from_y, to_x, to_y, dmg, kind) in spawns {
+            self.spawn_projectile(from_x, from_y, to_x, to_y, dmg, kind);
         }
     }
 
@@ -478,7 +489,15 @@ impl App {
         2
     }
 
-    fn spawn_projectile(&mut self, from_x: u16, from_y: u16, to_x: u16, to_y: u16, dmg: i32) {
+    fn spawn_projectile(
+        &mut self,
+        from_x: u16,
+        from_y: u16,
+        to_x: u16,
+        to_y: u16,
+        dmg: i32,
+        kind: TowerKind,
+    ) {
         self.game.projectiles.push(Projectile {
             x: from_x as i16,
             y: from_y as i16,
@@ -487,6 +506,7 @@ impl App {
             ttl: 90,
             damage: dmg,
             step_cd: self.projectile_base_step_cd(),
+            kind,
         });
 
         // pequeno flash de "muzzle" na torre
@@ -600,7 +620,13 @@ impl App {
     }
 
     pub fn enemy_at(&self, x: u16, y: u16) -> bool {
-        Self::enemy_index_at(self.game.enemies.as_slice(), self.game.path.as_slice(), x, y).is_some()
+        Self::enemy_index_at(
+            self.game.enemies.as_slice(),
+            self.game.path.as_slice(),
+            x,
+            y,
+        )
+        .is_some()
     }
 
     fn enemy_index_at(enemies: &[Enemy], path: &[(u16, u16)], x: u16, y: u16) -> Option<usize> {
@@ -627,16 +653,12 @@ impl App {
     }
 
     pub fn tower_stats(t: &Tower) -> Stats {
-        // Ajustado pra tick=50ms (antes era ~120ms):
-        // lvl 1: atk 40, range 6, cd 18 (~900ms)
-        // +20 atk por lvl, range +1 a cada 2 lvls,
-        // cd -2 a cada 3 lvls (clamp)
+        let tuning = Self::tower_tuning(t.kind);
         let lvl = t.level.max(1) as i32;
-        let attack = 40 + (lvl - 1) * 20;
-
-        let range = 6 + ((t.level.saturating_sub(1) / 2) as u16);
-        let cd_base: i32 = 18 - ((t.level.saturating_sub(1) / 3) as i32) * 2;
-        let fire_cd = cd_base.clamp(8, 24) as u16;
+        let attack = tuning.base_attack + (lvl - 1) * tuning.attack_step;
+        let range = tuning.base_range + (t.level.saturating_sub(1) / tuning.range_every) as u16;
+        let cd_drop = ((t.level.saturating_sub(1) / tuning.cd_drop_every) as i32) * tuning.cd_drop;
+        let fire_cd = (tuning.base_cd - cd_drop).clamp(tuning.cd_min, tuning.cd_max) as u16;
 
         Stats {
             attack,
@@ -678,31 +700,39 @@ impl App {
     }
 
     fn try_build(&mut self) {
-        let Some((x, y)) = self.game.selected_cell else { return; };
+        let Some((x, y)) = self.game.selected_cell else {
+            return;
+        };
         if self.is_path(x, y) {
             return;
         }
         if self.tower_index_at(x, y).is_some() {
             return;
         }
-        if self.game.money < 50 {
+        let cost = Self::tower_cost(self.game.build_kind);
+        if self.game.money < cost {
             return;
         }
-        self.game.money -= 50;
+        self.game.money -= cost;
         self.game.towers.push(Tower {
             x,
             y,
-            kind: TowerKind::Basic,
+            kind: self.game.build_kind,
             level: 1,
             cooldown: 0,
         });
     }
 
     fn try_upgrade(&mut self) {
-        let Some((x, y)) = self.game.selected_cell else { return; };
-        let Some(idx) = self.tower_index_at(x, y) else { return; };
+        let Some((x, y)) = self.game.selected_cell else {
+            return;
+        };
+        let Some(idx) = self.tower_index_at(x, y) else {
+            return;
+        };
 
-        if self.game.money < 30 {
+        let cost = Self::tower_upgrade_cost(self.game.towers[idx].kind);
+        if self.game.money < cost {
             return;
         }
         let t = &mut self.game.towers[idx];
@@ -710,13 +740,17 @@ impl App {
             return;
         }
 
-        self.game.money -= 30;
+        self.game.money -= cost;
         t.level += 1;
     }
 
     fn try_sell(&mut self) {
-        let Some((x, y)) = self.game.selected_cell else { return; };
-        let Some(idx) = self.tower_index_at(x, y) else { return; };
+        let Some((x, y)) = self.game.selected_cell else {
+            return;
+        };
+        let Some(idx) = self.tower_index_at(x, y) else {
+            return;
+        };
         self.game.towers.remove(idx);
         self.game.money += 20;
     }
@@ -736,4 +770,189 @@ impl App {
 
 fn manhattan(x1: u16, y1: u16, x2: u16, y2: u16) -> u16 {
     x1.abs_diff(x2) + y1.abs_diff(y2)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TowerTuning {
+    base_attack: i32,
+    attack_step: i32,
+    base_range: u16,
+    range_every: u16,
+    base_cd: i32,
+    cd_drop_every: u16,
+    cd_drop: i32,
+    cd_min: i32,
+    cd_max: i32,
+}
+
+impl App {
+    fn tower_tuning(kind: TowerKind) -> TowerTuning {
+        match kind {
+            TowerKind::Basic => TowerTuning {
+                base_attack: 40,
+                attack_step: 20,
+                base_range: 6,
+                range_every: 2,
+                base_cd: 18,
+                cd_drop_every: 3,
+                cd_drop: 2,
+                cd_min: 8,
+                cd_max: 24,
+            },
+            TowerKind::Sniper => TowerTuning {
+                base_attack: 90,
+                attack_step: 30,
+                base_range: 9,
+                range_every: 3,
+                base_cd: 26,
+                cd_drop_every: 4,
+                cd_drop: 2,
+                cd_min: 14,
+                cd_max: 30,
+            },
+            TowerKind::Rapid => TowerTuning {
+                base_attack: 22,
+                attack_step: 8,
+                base_range: 5,
+                range_every: 4,
+                base_cd: 12,
+                cd_drop_every: 2,
+                cd_drop: 1,
+                cd_min: 6,
+                cd_max: 18,
+            },
+        }
+    }
+
+    pub fn tower_cost(kind: TowerKind) -> i32 {
+        match kind {
+            TowerKind::Basic => 50,
+            TowerKind::Sniper => 80,
+            TowerKind::Rapid => 45,
+        }
+    }
+
+    pub fn tower_upgrade_cost(kind: TowerKind) -> i32 {
+        match kind {
+            TowerKind::Basic => 30,
+            TowerKind::Sniper => 40,
+            TowerKind::Rapid => 25,
+        }
+    }
+
+    pub fn build_preview_stats(&self) -> Stats {
+        let t = Tower {
+            x: 0,
+            y: 0,
+            kind: self.game.build_kind,
+            level: 1,
+            cooldown: 0,
+        };
+        Self::tower_stats(&t)
+    }
+
+    pub fn available_towers() -> [TowerKind; 3] {
+        [TowerKind::Basic, TowerKind::Sniper, TowerKind::Rapid]
+    }
+
+    fn pick_map(rng: &mut u64) -> MapSpec {
+        let maps = Self::build_maps();
+        let idx = (Self::rand_u32_from(rng) as usize) % maps.len();
+        maps[idx].clone()
+    }
+
+    fn build_maps() -> Vec<MapSpec> {
+        vec![
+            Self::map_serpentine(),
+            Self::map_cascade(),
+            Self::map_spiral(),
+        ]
+    }
+
+    fn map_serpentine() -> MapSpec {
+        let grid_w = 36;
+        let grid_h = 18;
+        let mut path = Vec::new();
+        Self::push_segment(&mut path, (1, 3), (grid_w - 2, 3));
+        Self::push_segment(&mut path, (grid_w - 2, 3), (grid_w - 2, grid_h - 3));
+        Self::push_segment(&mut path, (grid_w - 2, grid_h - 3), (2, grid_h - 3));
+        MapSpec {
+            name: "Serpentine",
+            grid_w,
+            grid_h,
+            path,
+        }
+    }
+
+    fn map_cascade() -> MapSpec {
+        let grid_w = 44;
+        let grid_h = 22;
+        let mut path = Vec::new();
+        Self::push_segment(&mut path, (1, 2), (grid_w - 3, 2));
+        Self::push_segment(&mut path, (grid_w - 3, 2), (grid_w - 3, 10));
+        Self::push_segment(&mut path, (grid_w - 3, 10), (3, 10));
+        Self::push_segment(&mut path, (3, 10), (3, grid_h - 3));
+        Self::push_segment(&mut path, (3, grid_h - 3), (grid_w - 2, grid_h - 3));
+        MapSpec {
+            name: "Cascade",
+            grid_w,
+            grid_h,
+            path,
+        }
+    }
+
+    fn map_spiral() -> MapSpec {
+        let grid_w = 50;
+        let grid_h = 24;
+        let mut path = Vec::new();
+        Self::push_segment(&mut path, (1, 3), (grid_w - 2, 3));
+        Self::push_segment(&mut path, (grid_w - 2, 3), (grid_w - 2, grid_h - 4));
+        Self::push_segment(&mut path, (grid_w - 2, grid_h - 4), (3, grid_h - 4));
+        Self::push_segment(&mut path, (3, grid_h - 4), (3, 6));
+        Self::push_segment(&mut path, (3, 6), (grid_w - 4, 6));
+        Self::push_segment(&mut path, (grid_w - 4, 6), (grid_w - 4, grid_h - 6));
+        Self::push_segment(&mut path, (grid_w - 4, grid_h - 6), (6, grid_h - 6));
+        MapSpec {
+            name: "Spiral",
+            grid_w,
+            grid_h,
+            path,
+        }
+    }
+
+    fn push_segment(path: &mut Vec<(u16, u16)>, from: (u16, u16), to: (u16, u16)) {
+        let (x1, y1) = from;
+        let (x2, y2) = to;
+        if x1 == x2 {
+            let (start, end) = if y1 <= y2 { (y1, y2) } else { (y2, y1) };
+            for y in start..=end {
+                path.push((x1, y));
+            }
+        } else if y1 == y2 {
+            let (start, end) = if x1 <= x2 { (x1, x2) } else { (x2, x1) };
+            for x in start..=end {
+                path.push((x, y1));
+            }
+        }
+    }
+
+    fn first_buildable(grid_w: u16, grid_h: u16, path: &[(u16, u16)]) -> (u16, u16) {
+        for y in 1..grid_h.saturating_sub(1) {
+            for x in 1..grid_w.saturating_sub(1) {
+                if !path.iter().any(|&(px, py)| px == x && py == y) {
+                    return (x, y);
+                }
+            }
+        }
+        (1, 1)
+    }
+
+    fn rand_u32_from(rng: &mut u64) -> u32 {
+        let mut x = *rng;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        *rng = x;
+        ((x.wrapping_mul(0x2545F4914F6CDD1D_u64)) >> 32) as u32
+    }
 }

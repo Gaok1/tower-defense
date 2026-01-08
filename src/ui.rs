@@ -94,12 +94,13 @@ fn draw_compact(f: &mut Frame, app: &mut App, area: Rect) {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(10),
-            Constraint::Length(10),
+            Constraint::Length(11),
         ])
         .split(area);
 
     draw_header(f, app, rows[0]);
     draw_map_panel(f, app, rows[1]);
+    app.ui.hit.build_options = [Rect::new(0, 0, 0, 0); 3];
 
     let bottom = Layout::default()
         .direction(Direction::Vertical)
@@ -126,7 +127,11 @@ fn panel_block(title: &str) -> Block<'static> {
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(24), Constraint::Min(10), Constraint::Length(22)])
+        .constraints([
+            Constraint::Length(24),
+            Constraint::Min(10),
+            Constraint::Length(22),
+        ])
         .split(area);
 
     // Brand
@@ -162,7 +167,9 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             Block::default()
                 .title(Span::styled(
                     format!(" Wave {} ", app.game.wave),
-                    Style::default().fg(panel_title()).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(panel_title())
+                        .add_modifier(Modifier::BOLD),
                 ))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
@@ -176,11 +183,16 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let stats = Paragraph::new(Line::from(vec![
         Span::styled(format!("$ {}", app.game.money), Style::default().fg(warn())),
         Span::raw("  "),
-        Span::styled(format!("HP {}", app.game.lives), Style::default().fg(danger())),
+        Span::styled(
+            format!("HP {}", app.game.lives),
+            Style::default().fg(danger()),
+        ),
         Span::raw("  "),
         Span::styled(
             format!("x{}", app.game.speed),
-            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
         ),
     ]))
     .alignment(Alignment::Center)
@@ -195,7 +207,8 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_map_panel(f: &mut Frame, app: &mut App, area: Rect) {
-    let block = panel_block("Map");
+    let title = format!("Map — {}", app.game.map_name);
+    let block = panel_block(&title);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -232,6 +245,8 @@ fn draw_map_panel(f: &mut Frame, app: &mut App, area: Rect) {
             Span::raw(": start/pause  "),
             Span::styled("B", Style::default().fg(text_dim())),
             Span::raw(": build  "),
+            Span::styled("1-3", Style::default().fg(text_dim())),
+            Span::raw(": select tower  "),
             Span::styled("U", Style::default().fg(text_dim())),
             Span::raw(": upgrade  "),
             Span::styled("S", Style::default().fg(text_dim())),
@@ -285,13 +300,15 @@ fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
         .constraints([
             Constraint::Length(7),
             Constraint::Length(6),
-            Constraint::Min(10),
+            Constraint::Length(7),
+            Constraint::Min(8),
         ])
         .split(area);
 
     draw_stats_panel(f, app, rows[0]);
     draw_flow_panel(f, app, rows[1]);
-    draw_inspector_panel(f, app, rows[2]);
+    draw_build_panel(f, app, rows[2]);
+    draw_inspector_panel(f, app, rows[3]);
 }
 
 fn draw_stats_panel(f: &mut Frame, app: &App, area: Rect) {
@@ -313,7 +330,10 @@ fn draw_stats_panel(f: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled("Towers", Style::default().fg(text_dim())),
             Span::raw(": "),
-            Span::styled(format!("{}", app.game.towers.len()), Style::default().fg(accent())),
+            Span::styled(
+                format!("{}", app.game.towers.len()),
+                Style::default().fg(accent()),
+            ),
         ]),
         Line::from(vec![
             Span::styled("Enemies", Style::default().fg(text_dim())),
@@ -342,6 +362,52 @@ fn draw_flow_panel(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(g, area);
 }
 
+fn draw_build_panel(f: &mut Frame, app: &mut App, area: Rect) {
+    let block = panel_block("Build Selector");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Length(2),
+            Constraint::Length(2),
+        ])
+        .split(inner);
+
+    let towers = App::available_towers();
+    for (i, kind) in towers.iter().enumerate() {
+        app.ui.hit.build_options[i] = rows[i];
+
+        let is_active = app.game.build_kind == *kind;
+        let is_hover = app.ui.hover_build_kind == Some(*kind);
+        let label = format!(
+            "{}. {:<6} ${}",
+            i + 1,
+            tower_kind_label(*kind),
+            App::tower_cost(*kind)
+        );
+
+        let style = if is_active {
+            Style::default()
+                .fg(Color::Black)
+                .bg(tower_kind_color(*kind))
+        } else if is_hover {
+            Style::default().fg(Color::Black).bg(accent())
+        } else {
+            Style::default().fg(Color::White).bg(bg())
+        };
+
+        f.render_widget(
+            Paragraph::new(label)
+                .alignment(Alignment::Left)
+                .style(style),
+            rows[i],
+        );
+    }
+}
+
 fn draw_inspector_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let block = panel_block("Inspector");
     let inner = block.inner(area);
@@ -349,7 +415,11 @@ fn draw_inspector_panel(f: &mut Frame, app: &mut App, area: Rect) {
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Min(6), Constraint::Length(3)])
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(6),
+            Constraint::Length(3),
+        ])
         .split(inner);
 
     let sel = app
@@ -361,7 +431,7 @@ fn draw_inspector_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let top = Paragraph::new(vec![
         Line::from(sel),
         Line::from(Span::styled(
-            "Tip: hover Upgrade to preview", 
+            "Tip: hover Upgrade to preview",
             Style::default().fg(text_dim()),
         )),
     ])
@@ -376,10 +446,10 @@ fn draw_inspector_panel(f: &mut Frame, app: &mut App, area: Rect) {
             Span::styled("Type", Style::default().fg(text_dim())),
             Span::raw(": "),
             Span::styled(
-                match t.kind {
-                    TowerKind::Basic => "Basic",
-                },
-                Style::default().fg(warn()).add_modifier(Modifier::BOLD),
+                tower_kind_label(t.kind),
+                Style::default()
+                    .fg(tower_kind_color(t.kind))
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw("   "),
             Span::styled(
@@ -394,21 +464,55 @@ fn draw_inspector_panel(f: &mut Frame, app: &mut App, area: Rect) {
             || app.ui.hover_action == Some(HoverAction::UpgradePreview);
         let d = app.upgrade_delta(t);
 
-        stats_lines.push(line_stat_i32("Attack", s.attack, upgrade_hover.then_some(d.attack)));
-        stats_lines.push(line_stat_u16("Range", s.range, upgrade_hover.then_some(d.range)));
-        stats_lines.push(line_stat_u16_inv("Fire CD", s.fire_cd, upgrade_hover.then_some(d.fire_cd)));
+        stats_lines.push(line_stat_i32(
+            "Attack",
+            s.attack,
+            upgrade_hover.then_some(d.attack),
+        ));
+        stats_lines.push(line_stat_u16(
+            "Range",
+            s.range,
+            upgrade_hover.then_some(d.range),
+        ));
+        stats_lines.push(line_stat_u16_inv(
+            "Fire CD",
+            s.fire_cd,
+            upgrade_hover.then_some(d.fire_cd),
+        ));
 
         stats_lines.push(Line::from(""));
         stats_lines.push(Line::from(vec![
             Span::styled("Build", Style::default().fg(text_dim())),
-            Span::raw(": 50   "),
+            Span::raw(format!(": {}   ", App::tower_cost(app.game.build_kind))),
             Span::styled("Upgrade", Style::default().fg(text_dim())),
-            Span::raw(": 30   "),
+            Span::raw(format!(": {}   ", App::tower_upgrade_cost(t.kind))),
             Span::styled("Sell", Style::default().fg(text_dim())),
             Span::raw(": +20"),
         ]));
     } else {
+        let preview = app.build_preview_stats();
         stats_lines.push(Line::from("No tower selected."));
+        stats_lines.push(Line::from(vec![
+            Span::styled("Build", Style::default().fg(text_dim())),
+            Span::raw(": "),
+            Span::styled(
+                tower_kind_label(app.game.build_kind),
+                Style::default()
+                    .fg(tower_kind_color(app.game.build_kind))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        stats_lines.push(Line::from(""));
+        stats_lines.push(Line::from(vec![
+            Span::styled("Attack", Style::default().fg(text_dim())),
+            Span::raw(format!(": {}", preview.attack)),
+            Span::raw("   "),
+            Span::styled("Range", Style::default().fg(text_dim())),
+            Span::raw(format!(": {}", preview.range)),
+            Span::raw("   "),
+            Span::styled("CD", Style::default().fg(text_dim())),
+            Span::raw(format!(": {}", preview.fire_cd)),
+        ]));
         stats_lines.push(Line::from(Span::styled(
             "Select grass tile and press Build.",
             Style::default().fg(text_dim()),
@@ -426,7 +530,11 @@ fn draw_inspector_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let actions = rows[2];
     let action_rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
         .split(actions);
 
     app.ui.hit.inspector_upgrade = action_rows[0];
@@ -440,10 +548,14 @@ fn draw_inspector_panel(f: &mut Frame, app: &mut App, area: Rect) {
         Style::default().fg(panel_title()).bg(bg())
     };
 
+    let upgrade_cost = app
+        .selected_tower()
+        .map(|t| App::tower_upgrade_cost(t.kind))
+        .unwrap_or(0);
     let upgrade_text = if app.selected_tower().is_some() {
-        "Upgrade [U] (30)  — hover preview"
+        format!("Upgrade [U] ({upgrade_cost})  — hover preview")
     } else {
-        "Upgrade [U] (30)  — select a tower"
+        "Upgrade [U] (—)  — select a tower".to_string()
     };
 
     f.render_widget(
@@ -461,9 +573,12 @@ fn draw_inspector_panel(f: &mut Frame, app: &mut App, area: Rect) {
     );
 
     f.render_widget(
-        Paragraph::new("Build [B] (50) — grass")
-            .style(Style::default().fg(good()).bg(bg()))
-            .alignment(Alignment::Left),
+        Paragraph::new(format!(
+            "Build [B] ({}) — grass",
+            App::tower_cost(app.game.build_kind)
+        ))
+        .style(Style::default().fg(good()).bg(bg()))
+        .alignment(Alignment::Left),
         action_rows[2],
     );
 }
@@ -536,6 +651,11 @@ fn draw_compact_info(f: &mut Frame, app: &App, area: Rect) {
             app.game.wave, app.game.lives, app.game.money, app.game.speed
         )),
         Line::from(sel),
+        Line::from(format!(
+            "Build: {} ({}). Switch: 1 Basic • 2 Sniper • 3 Rapid",
+            tower_kind_label(app.game.build_kind),
+            App::tower_cost(app.game.build_kind)
+        )),
         Line::from(Span::styled(
             "Space start/pause • B build • U upgrade • S sell • F speed • Q quit",
             Style::default().fg(text_dim()),
@@ -618,6 +738,7 @@ impl<'a> Widget for MapWidget<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let app = self.app;
         let vp = app.ui.viewport;
+        let range_focus = range_focus(app);
 
         if area.width == 0 || area.height == 0 || vp.vis_w == 0 || vp.vis_h == 0 {
             return;
@@ -654,16 +775,27 @@ impl<'a> Widget for MapWidget<'a> {
 
                 if let Some(ti) = app.tower_index_at(cell_x, cell_y) {
                     let t = &app.game.towers[ti];
-                    sym = assets::GLYPH_TOWER_BASIC;
+                    sym = match t.kind {
+                        TowerKind::Basic => assets::GLYPH_TOWER_BASIC,
+                        TowerKind::Sniper => assets::GLYPH_TOWER_SNIPER,
+                        TowerKind::Rapid => assets::GLYPH_TOWER_RAPID,
+                    };
                     style = Style::default()
-                        .fg(if t.level >= 4 { warn() } else { Color::Yellow })
+                        .fg(if t.level >= 4 {
+                            warn()
+                        } else {
+                            tower_kind_color(t.kind)
+                        })
                         .bg(bg())
                         .add_modifier(Modifier::BOLD);
                 }
 
                 if app.enemy_at(cell_x, cell_y) {
                     sym = assets::GLYPH_ENEMY;
-                    style = Style::default().fg(Color::Red).bg(bg()).add_modifier(Modifier::BOLD);
+                    style = Style::default()
+                        .fg(Color::Red)
+                        .bg(bg())
+                        .add_modifier(Modifier::BOLD);
                 }
 
                 // impacto grande por cima do tile
@@ -675,8 +807,14 @@ impl<'a> Widget for MapWidget<'a> {
                 {
                     sym = assets::GLYPH_IMPACT_BIG;
                     style = match fx.ttl {
-                        4 => Style::default().fg(danger()).bg(bg()).add_modifier(Modifier::BOLD),
-                        3 => Style::default().fg(Color::Red).bg(bg()).add_modifier(Modifier::BOLD),
+                        4 => Style::default()
+                            .fg(danger())
+                            .bg(bg())
+                            .add_modifier(Modifier::BOLD),
+                        3 => Style::default()
+                            .fg(Color::Red)
+                            .bg(bg())
+                            .add_modifier(Modifier::BOLD),
                         2 => Style::default().fg(Color::DarkGray).bg(bg()),
                         _ => Style::default().fg(text_dim()).bg(bg()),
                     };
@@ -686,6 +824,10 @@ impl<'a> Widget for MapWidget<'a> {
                     style = style.bg(Color::Blue).fg(Color::White);
                 } else if is_hover {
                     style = style.bg(Color::DarkGray).fg(Color::Black);
+                } else if let Some((rx, ry, range)) = range_focus {
+                    if manhattan(cell_x, cell_y, rx, ry) <= range {
+                        style = style.bg(Color::DarkBlue);
+                    }
                 }
 
                 // tile_w=2 -> glifo + padding
@@ -716,14 +858,17 @@ impl<'a> Widget for MapWidget<'a> {
             let sx = area.x + gx * vp.tile_w;
             let sy = area.y + gy * vp.tile_h;
 
+            let (sym, color) = match p.kind {
+                TowerKind::Basic => (assets::GLYPH_PROJECTILE_BASIC, Color::LightMagenta),
+                TowerKind::Sniper => (assets::GLYPH_PROJECTILE_SNIPER, Color::LightCyan),
+                TowerKind::Rapid => (assets::GLYPH_PROJECTILE_RAPID, Color::Yellow),
+            };
             let style = Style::default()
-                .fg(Color::LightMagenta)
+                .fg(color)
                 .bg(bg())
                 .add_modifier(Modifier::BOLD);
             if sx < area.right() && sy < area.bottom() {
-                buf.get_mut(sx, sy)
-                    .set_symbol(assets::GLYPH_PROJECTILE)
-                    .set_style(style);
+                buf.get_mut(sx, sy).set_symbol(sym).set_style(style);
             }
         }
 
@@ -769,9 +914,41 @@ fn particle_visual(kind: ParticleKind, ttl: u8) -> (&'static str, Style) {
                 .bg(bg())
                 .add_modifier(Modifier::BOLD),
         ),
-        ParticleKind::Smoke => (
-            assets::SMOKE[idx],
-            Style::default().fg(text_dim()).bg(bg()),
-        ),
+        ParticleKind::Smoke => (assets::SMOKE[idx], Style::default().fg(text_dim()).bg(bg())),
     }
+}
+
+fn tower_kind_label(kind: TowerKind) -> &'static str {
+    match kind {
+        TowerKind::Basic => "Basic",
+        TowerKind::Sniper => "Sniper",
+        TowerKind::Rapid => "Rapid",
+    }
+}
+
+fn tower_kind_color(kind: TowerKind) -> Color {
+    match kind {
+        TowerKind::Basic => warn(),
+        TowerKind::Sniper => Color::LightCyan,
+        TowerKind::Rapid => Color::Yellow,
+    }
+}
+
+fn range_focus(app: &App) -> Option<(u16, u16, u16)> {
+    if let Some(t) = app.selected_tower() {
+        let stats = App::tower_stats(t);
+        return Some((t.x, t.y, stats.range));
+    }
+
+    let (x, y) = app.game.selected_cell?;
+    if app.is_path(x, y) || app.tower_index_at(x, y).is_some() {
+        return None;
+    }
+
+    let preview = app.build_preview_stats();
+    Some((x, y, preview.range))
+}
+
+fn manhattan(x1: u16, y1: u16, x2: u16, y2: u16) -> u16 {
+    x1.abs_diff(x2) + y1.abs_diff(y2)
 }
