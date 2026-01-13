@@ -13,35 +13,35 @@ pub struct Glyph2 {
 
 // Terreno
 pub const GLYPH_GOAL: Glyph2 = Glyph2 {
-    left: "⌂",
-    right: "⌁",
+    left: "⛬",
+    right: "⛬",
 };
 pub const GLYPH_PATH: [Glyph2; 2] = [
     Glyph2 {
-        left: "▒",
-        right: "▒",
+        left: "▓",
+        right: "▓",
     },
     Glyph2 {
         left: "▓",
-        right: "▒",
+        right: "█",
     },
 ];
 pub const GLYPH_GRASS: [Glyph2; 4] = [
     Glyph2 {
-        left: "·",
-        right: "·",
+        left: "░",
+        right: "░",
     },
     Glyph2 {
-        left: "˙",
-        right: "·",
+        left: "░",
+        right: "▒",
     },
     Glyph2 {
-        left: "·",
-        right: "ˑ",
+        left: "▒",
+        right: "░",
     },
     Glyph2 {
-        left: "ˑ",
-        right: "˙",
+        left: "░",
+        right: "░",
     },
 ];
 
@@ -58,6 +58,18 @@ pub const GLYPH_TOWER_RAPID: Glyph2 = Glyph2 {
     left: "╟",
     right: "╢",
 };
+pub const GLYPH_TOWER_CANNON: Glyph2 = Glyph2 {
+    left: "╦",
+    right: "╦",
+};
+pub const GLYPH_TOWER_TESLA: Glyph2 = Glyph2 {
+    left: "╩",
+    right: "╩",
+};
+pub const GLYPH_TOWER_FROST: Glyph2 = Glyph2 {
+    left: "╣",
+    right: "╠",
+};
 pub const GLYPH_ENEMY: Glyph2 = Glyph2 {
     left: "◁",
     right: "▷",
@@ -67,6 +79,9 @@ pub const GLYPH_ENEMY: Glyph2 = Glyph2 {
 pub const GLYPH_PROJECTILE_BASIC: &str = "⠂"; // Braille (não-emoji, bem leve)
 pub const GLYPH_PROJECTILE_SNIPER: &str = "⠁";
 pub const GLYPH_PROJECTILE_RAPID: &str = "⠄";
+pub const GLYPH_PROJECTILE_CANNON: &str = "⠶";
+pub const GLYPH_PROJECTILE_TESLA: &str = "⠲";
+pub const GLYPH_PROJECTILE_FROST: &str = "⠴";
 
 // VFX: impacto e partículas
 pub const GLYPH_IMPACT_BIG: Glyph2 = Glyph2 {
@@ -78,3 +93,5 @@ pub const GLYPH_IMPACT_BIG: Glyph2 = Glyph2 {
 pub const TRAIL: [&str; 4] = ["⠂", "⠄", "⠆", "⠁"]; // trilha
 pub const SPARK: [&str; 4] = ["⠒", "⠖", "⠶", "⠷"]; // fagulhas
 pub const SMOKE: [&str; 4] = ["░", "▒", "▓", "█"]; // "fumaça" (densidade)
+pub const ARC: [&str; 4] = ["⠈", "⠘", "⠸", "⠹"]; // faísca elétrica
+pub const SHARD: [&str; 4] = ["⠐", "⠠", "⠤", "⠦"]; // estilhaço/gelado

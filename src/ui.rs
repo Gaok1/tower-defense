@@ -8,7 +8,7 @@ use ratatui::{
 use crate::{
     app::{
         App, ButtonId, HoverAction, LayoutMode, MapSelectAction, MapSpec, MapViewport,
-        ParticleKind, Screen, TowerKind,
+        ParticleKind, Screen, TOWER_KIND_COUNT, TowerKind,
     },
     assets,
 };
@@ -106,7 +106,7 @@ fn draw_compact(f: &mut Frame, app: &mut App, area: Rect) {
 
     draw_header(f, app, rows[0]);
     draw_map_panel(f, app, rows[1]);
-    app.ui.hit.build_options = [Rect::new(0, 0, 0, 0); 3];
+    app.ui.hit.build_options = [Rect::new(0, 0, 0, 0); TOWER_KIND_COUNT];
 
     let bottom = Layout::default()
         .direction(Direction::Vertical)
@@ -251,7 +251,7 @@ fn draw_map_panel(f: &mut Frame, app: &mut App, area: Rect) {
             Span::raw(": start/pause  "),
             Span::styled("B", Style::default().fg(text_dim())),
             Span::raw(": build  "),
-            Span::styled("1-3", Style::default().fg(text_dim())),
+            Span::styled("1-6", Style::default().fg(text_dim())),
             Span::raw(": select tower  "),
             Span::styled("U", Style::default().fg(text_dim())),
             Span::raw(": upgrade  "),
@@ -322,16 +322,12 @@ fn draw_build_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    let towers = App::available_towers();
+    let row_constraints = vec![Constraint::Length(1); towers.len()];
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),
-            Constraint::Length(2),
-            Constraint::Length(2),
-        ])
+        .constraints(row_constraints)
         .split(inner);
-
-    let towers = App::available_towers();
     for (i, kind) in towers.iter().enumerate() {
         app.ui.hit.build_options[i] = rows[i];
 
@@ -485,7 +481,7 @@ fn draw_inspector_panel(f: &mut Frame, app: &mut App, area: Rect) {
             )));
         } else {
             stats_lines.push(Line::from(Span::styled(
-                "Select a tower type (1/2/3) to build.",
+                "Select a tower type (1-6) to build.",
                 Style::default().fg(text_dim()),
             )));
         }
@@ -547,20 +543,11 @@ fn draw_inspector_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let build_label = if let Some(kind) = app.game.build_kind {
         if let Some((x, y)) = app.game.selected_cell {
             if app.can_build_at(x, y, kind) {
-                format!(
-                    "Build [B] ({}) — click to place",
-                    App::tower_cost(kind)
-                )
+                format!("Build [B] ({}) — click to place", App::tower_cost(kind))
             } else if app.is_path(x, y) || app.tower_index_at(x, y).is_some() {
-                format!(
-                    "Build [B] ({}) — blocked tile",
-                    App::tower_cost(kind)
-                )
+                format!("Build [B] ({}) — blocked tile", App::tower_cost(kind))
             } else {
-                format!(
-                    "Build [B] ({}) — need more $",
-                    App::tower_cost(kind)
-                )
+                format!("Build [B] ({}) — need more $", App::tower_cost(kind))
             }
         } else {
             format!("Build [B] ({}) — select tile", App::tower_cost(kind))
@@ -652,7 +639,7 @@ fn draw_compact_info(f: &mut Frame, app: &App, area: Rect) {
         )),
         Line::from(sel),
         Line::from(format!(
-            "Build: {} ({}). Click to place. Switch: 1 Basic • 2 Sniper • 3 Rapid",
+            "Build: {} ({}). Click to place. Switch: 1 Basic • 2 Sniper • 3 Rapid • 4 Cannon • 5 Tesla • 6 Frost",
             app.game.build_kind.map(tower_kind_label).unwrap_or("-"),
             app.game
                 .build_kind
@@ -665,7 +652,7 @@ fn draw_compact_info(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(text_dim()),
         )),
         Line::from(Span::styled(
-            "Evoluções: Tesla • Bosses • Terrenos especiais • Rotas dinâmicas • Endless",
+            "Evoluções: Cannon • Tesla • Frost • Mapas temáticos • FX por tipo",
             Style::default().fg(text_dim()),
         )),
     ];
@@ -688,10 +675,10 @@ fn draw_evolutions_panel(f: &mut Frame, area: Rect) {
             "Próximos passos sugeridos",
             Style::default().fg(panel_title()),
         )),
-        Line::from("• Torre Tesla: dano em área + micro stun"),
-        Line::from("• Boss a cada 5 ondas com recompensa rara"),
-        Line::from("• Terrenos especiais (pântano, alto, gelo)"),
-        Line::from("• Rotas dinâmicas com bifurcações"),
+        Line::from("• Torre Canhão: tiro pesado e FX de impacto"),
+        Line::from("• Torre Tesla: arco elétrico com faíscas"),
+        Line::from("• Torre Frost: estilhaços e controle"),
+        Line::from("• Mapas temáticos com rotas largas"),
         Line::from("• Modo infinito + placar de tempo"),
     ];
 
@@ -842,6 +829,9 @@ impl<'a> Widget for MapWidget<'a> {
                         TowerKind::Basic => assets::GLYPH_TOWER_BASIC,
                         TowerKind::Sniper => assets::GLYPH_TOWER_SNIPER,
                         TowerKind::Rapid => assets::GLYPH_TOWER_RAPID,
+                        TowerKind::Cannon => assets::GLYPH_TOWER_CANNON,
+                        TowerKind::Tesla => assets::GLYPH_TOWER_TESLA,
+                        TowerKind::Frost => assets::GLYPH_TOWER_FROST,
                     };
                     style = Style::default()
                         .fg(if t.level >= 4 {
@@ -853,24 +843,21 @@ impl<'a> Widget for MapWidget<'a> {
                         .add_modifier(Modifier::BOLD);
                 }
 
-                if build_preview == Some(((cell_x, cell_y), TowerKind::Basic)) {
-                    tile = assets::GLYPH_TOWER_BASIC;
-                    style = Style::default()
-                        .fg(tower_kind_color(TowerKind::Basic))
-                        .bg(bg())
-                        .add_modifier(Modifier::DIM);
-                } else if build_preview == Some(((cell_x, cell_y), TowerKind::Sniper)) {
-                    tile = assets::GLYPH_TOWER_SNIPER;
-                    style = Style::default()
-                        .fg(tower_kind_color(TowerKind::Sniper))
-                        .bg(bg())
-                        .add_modifier(Modifier::DIM);
-                } else if build_preview == Some(((cell_x, cell_y), TowerKind::Rapid)) {
-                    tile = assets::GLYPH_TOWER_RAPID;
-                    style = Style::default()
-                        .fg(tower_kind_color(TowerKind::Rapid))
-                        .bg(bg())
-                        .add_modifier(Modifier::DIM);
+                if let Some(((px, py), preview_kind)) = build_preview {
+                    if (cell_x, cell_y) == (px, py) {
+                        tile = match preview_kind {
+                            TowerKind::Basic => assets::GLYPH_TOWER_BASIC,
+                            TowerKind::Sniper => assets::GLYPH_TOWER_SNIPER,
+                            TowerKind::Rapid => assets::GLYPH_TOWER_RAPID,
+                            TowerKind::Cannon => assets::GLYPH_TOWER_CANNON,
+                            TowerKind::Tesla => assets::GLYPH_TOWER_TESLA,
+                            TowerKind::Frost => assets::GLYPH_TOWER_FROST,
+                        };
+                        style = Style::default()
+                            .fg(tower_kind_color(preview_kind))
+                            .bg(bg())
+                            .add_modifier(Modifier::DIM);
+                    }
                 }
 
                 if app.enemy_at(cell_x, cell_y) {
@@ -889,15 +876,16 @@ impl<'a> Widget for MapWidget<'a> {
                     .find(|fx| fx.x == cell_x && fx.y == cell_y)
                 {
                     tile = assets::GLYPH_IMPACT_BIG;
+                    let base_color = tower_kind_color(fx.kind);
                     style = match fx.ttl {
                         4 => Style::default()
-                            .fg(danger())
+                            .fg(base_color)
                             .bg(bg())
                             .add_modifier(Modifier::BOLD),
                         3 => Style::default()
-                            .fg(Color::Red)
+                            .fg(base_color)
                             .bg(bg())
-                            .add_modifier(Modifier::BOLD),
+                            .add_modifier(Modifier::DIM),
                         2 => Style::default().fg(Color::DarkGray).bg(bg()),
                         _ => Style::default().fg(text_dim()).bg(bg()),
                     };
@@ -924,7 +912,8 @@ impl<'a> Widget for MapWidget<'a> {
                 }
                 for pad in 2..vp.tile_w {
                     if sx + pad < area.right() && sy < area.bottom() {
-                        buf.get_mut(sx + pad, sy).set_symbol(" ").set_style(style);
+                        let glyph = if pad % 2 == 0 { tile.left } else { tile.right };
+                        buf.get_mut(sx + pad, sy).set_symbol(glyph).set_style(style);
                     }
                 }
             }
@@ -953,6 +942,9 @@ impl<'a> Widget for MapWidget<'a> {
                 TowerKind::Basic => (assets::GLYPH_PROJECTILE_BASIC, Color::LightMagenta),
                 TowerKind::Sniper => (assets::GLYPH_PROJECTILE_SNIPER, Color::LightCyan),
                 TowerKind::Rapid => (assets::GLYPH_PROJECTILE_RAPID, Color::Yellow),
+                TowerKind::Cannon => (assets::GLYPH_PROJECTILE_CANNON, Color::LightRed),
+                TowerKind::Tesla => (assets::GLYPH_PROJECTILE_TESLA, Color::LightBlue),
+                TowerKind::Frost => (assets::GLYPH_PROJECTILE_FROST, Color::Cyan),
             };
             let style = Style::default()
                 .fg(color)
@@ -1197,7 +1189,8 @@ impl<'a> Widget for MapPreviewWidget<'a> {
                 }
                 for pad in 2..tile_w {
                     if sx + pad < area.right() && sy < area.bottom() {
-                        buf.get_mut(sx + pad, sy).set_symbol(" ").set_style(style);
+                        let glyph = if pad % 2 == 0 { tile.left } else { tile.right };
+                        buf.get_mut(sx + pad, sy).set_symbol(glyph).set_style(style);
                     }
                 }
             }
@@ -1222,6 +1215,17 @@ fn particle_visual(kind: ParticleKind, ttl: u8) -> (&'static str, Style) {
                 .add_modifier(Modifier::BOLD),
         ),
         ParticleKind::Smoke => (assets::SMOKE[idx], Style::default().fg(text_dim()).bg(bg())),
+        ParticleKind::Arc => (
+            assets::ARC[idx],
+            Style::default()
+                .fg(Color::LightBlue)
+                .bg(bg())
+                .add_modifier(Modifier::BOLD),
+        ),
+        ParticleKind::Shard => (
+            assets::SHARD[idx],
+            Style::default().fg(Color::Cyan).bg(bg()),
+        ),
     }
 }
 
@@ -1230,6 +1234,9 @@ fn tower_kind_label(kind: TowerKind) -> &'static str {
         TowerKind::Basic => "Basic",
         TowerKind::Sniper => "Sniper",
         TowerKind::Rapid => "Rapid",
+        TowerKind::Cannon => "Cannon",
+        TowerKind::Tesla => "Tesla",
+        TowerKind::Frost => "Frost",
     }
 }
 
@@ -1238,6 +1245,9 @@ fn tower_kind_color(kind: TowerKind) -> Color {
         TowerKind::Basic => warn(),
         TowerKind::Sniper => Color::LightCyan,
         TowerKind::Rapid => Color::Yellow,
+        TowerKind::Cannon => Color::LightRed,
+        TowerKind::Tesla => Color::LightBlue,
+        TowerKind::Frost => Color::Cyan,
     }
 }
 

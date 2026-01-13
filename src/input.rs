@@ -32,6 +32,9 @@ pub fn pump(app: &mut App) -> Result<()> {
                     KeyCode::Char('1') => app.toggle_build_kind(TowerKind::Basic),
                     KeyCode::Char('2') => app.toggle_build_kind(TowerKind::Sniper),
                     KeyCode::Char('3') => app.toggle_build_kind(TowerKind::Rapid),
+                    KeyCode::Char('4') => app.toggle_build_kind(TowerKind::Cannon),
+                    KeyCode::Char('5') => app.toggle_build_kind(TowerKind::Tesla),
+                    KeyCode::Char('6') => app.toggle_build_kind(TowerKind::Frost),
                     KeyCode::Char('+') | KeyCode::Char('=') => app.cycle_zoom(1),
                     KeyCode::Char('-') => app.cycle_zoom(-1),
                     _ => {}
@@ -117,7 +120,7 @@ fn hit_test_action(app: &App, x: u16, y: u16) -> Option<HoverAction> {
 
 fn hit_test_build(app: &App, x: u16, y: u16) -> Option<TowerKind> {
     let rects = app.ui.hit.build_options;
-    let ids = [TowerKind::Basic, TowerKind::Sniper, TowerKind::Rapid];
+    let ids = App::available_towers();
     for (i, id) in ids.iter().enumerate() {
         if contains(rects[i], x, y) {
             return Some(*id);

@@ -13,6 +13,8 @@ pub enum Screen {
     Game,
 }
 
+pub const TOWER_KIND_COUNT: usize = 6;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ButtonId {
     StartPause,
@@ -40,7 +42,7 @@ pub struct UiHitboxes {
     pub map_inner: Rect,
     pub buttons: [Rect; 6],
     pub inspector_upgrade: Rect, // linha clicável no inspector
-    pub build_options: [Rect; 3],
+    pub build_options: [Rect; TOWER_KIND_COUNT],
     pub map_select_left: Rect,
     pub map_select_right: Rect,
     pub map_select_start: Rect,
@@ -52,7 +54,7 @@ impl Default for UiHitboxes {
             map_inner: Rect::new(0, 0, 0, 0),
             buttons: [Rect::new(0, 0, 0, 0); 6],
             inspector_upgrade: Rect::new(0, 0, 0, 0),
-            build_options: [Rect::new(0, 0, 0, 0); 3],
+            build_options: [Rect::new(0, 0, 0, 0); TOWER_KIND_COUNT],
             map_select_left: Rect::new(0, 0, 0, 0),
             map_select_right: Rect::new(0, 0, 0, 0),
             map_select_start: Rect::new(0, 0, 0, 0),
@@ -101,6 +103,9 @@ pub enum TowerKind {
     Basic,
     Sniper,
     Rapid,
+    Cannon,
+    Tesla,
+    Frost,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -136,6 +141,8 @@ pub enum ParticleKind {
     Trail,
     Spark,
     Smoke,
+    Arc,
+    Shard,
 }
 
 #[derive(Debug, Clone)]
@@ -153,6 +160,7 @@ pub struct ImpactFx {
     pub x: u16,
     pub y: u16,
     pub ttl: u8,
+    pub kind: TowerKind,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -216,10 +224,10 @@ pub struct App {
 
 #[derive(Debug, Clone)]
 pub struct MapSpec {
-    name: &'static str,
-    grid_w: u16,
-    grid_h: u16,
-    path: Vec<(u16, u16)>,
+    pub name: &'static str,
+    pub grid_w: u16,
+    pub grid_h: u16,
+    pub path: Vec<(u16, u16)>,
 }
 
 impl App {
@@ -408,9 +416,8 @@ impl App {
 
     fn tick_projectiles(&mut self) {
         let sp = self.game.speed.max(1) as u16;
-        let base_step_cd = self.projectile_base_step_cd();
         let mut trails: Vec<(i16, i16)> = Vec::new();
-        let mut impacts: Vec<(u16, u16)> = Vec::new();
+        let mut impacts: Vec<(u16, u16, TowerKind)> = Vec::new();
 
         for p in &mut self.game.projectiles {
             if p.ttl > 0 {
@@ -424,7 +431,7 @@ impl App {
                 p.step_cd -= sp;
                 continue;
             }
-            p.step_cd = base_step_cd;
+            p.step_cd = Self::projectile_step_cd(p.kind);
 
             let old_x = p.x;
             let old_y = p.y;
@@ -455,7 +462,7 @@ impl App {
                     }
                 }
 
-                impacts.push((hit_x, hit_y));
+                impacts.push((hit_x, hit_y, p.kind));
                 p.ttl = 0;
             }
         }
@@ -465,8 +472,8 @@ impl App {
         for (x, y) in trails {
             self.spawn_trail(x, y);
         }
-        for (x, y) in impacts {
-            self.spawn_impact(x, y);
+        for (x, y, kind) in impacts {
+            self.spawn_impact(x, y, kind);
         }
     }
 
@@ -516,9 +523,15 @@ impl App {
         14
     }
 
-    fn projectile_base_step_cd(&self) -> u16 {
-        // 2 ticks = 100ms por tile (dá tempo de ver a trilha)
-        2
+    fn projectile_step_cd(kind: TowerKind) -> u16 {
+        match kind {
+            TowerKind::Rapid => 1,
+            TowerKind::Tesla => 1,
+            TowerKind::Basic => 2,
+            TowerKind::Frost => 2,
+            TowerKind::Cannon => 3,
+            TowerKind::Sniper => 3,
+        }
     }
 
     fn spawn_projectile(
@@ -530,19 +543,34 @@ impl App {
         dmg: i32,
         kind: TowerKind,
     ) {
+        let ttl = match kind {
+            TowerKind::Sniper => 120,
+            TowerKind::Cannon => 110,
+            TowerKind::Tesla => 80,
+            TowerKind::Frost => 90,
+            TowerKind::Rapid => 70,
+            TowerKind::Basic => 90,
+        };
+
         self.game.projectiles.push(Projectile {
             x: from_x as i16,
             y: from_y as i16,
             tx: to_x as i16,
             ty: to_y as i16,
-            ttl: 90,
+            ttl,
             damage: dmg,
-            step_cd: self.projectile_base_step_cd(),
+            step_cd: Self::projectile_step_cd(kind),
             kind,
         });
 
         // pequeno flash de "muzzle" na torre
         self.spawn_spark(from_x as i16, from_y as i16);
+        match kind {
+            TowerKind::Tesla => self.spawn_arc(from_x as i16, from_y as i16),
+            TowerKind::Cannon => self.spawn_smoke(from_x as i16, from_y as i16),
+            TowerKind::Frost => self.spawn_shard(from_x as i16, from_y as i16),
+            _ => {}
+        }
     }
 
     fn spawn_trail(&mut self, x: i16, y: i16) {
@@ -572,8 +600,8 @@ impl App {
         }
     }
 
-    fn spawn_impact(&mut self, x: u16, y: u16) {
-        self.game.impacts.push(ImpactFx { x, y, ttl: 4 });
+    fn spawn_impact(&mut self, x: u16, y: u16, kind: TowerKind) {
+        self.game.impacts.push(ImpactFx { x, y, ttl: 4, kind });
 
         let ix = x as i16;
         let iy = y as i16;
@@ -593,9 +621,54 @@ impl App {
         }
 
         // "fumacinha" no ponto de impacto
+        self.spawn_smoke(ix, iy);
+        if kind == TowerKind::Tesla {
+            for _ in 0..4 {
+                self.spawn_arc(ix, iy);
+            }
+        }
+        if kind == TowerKind::Frost {
+            for _ in 0..4 {
+                self.spawn_shard(ix, iy);
+            }
+        }
+        if kind == TowerKind::Cannon {
+            for _ in 0..2 {
+                self.spawn_smoke(ix, iy);
+            }
+        }
+    }
+
+    fn spawn_arc(&mut self, x: i16, y: i16) {
+        let vx = self.rand_i8(-2, 2);
+        let vy = self.rand_i8(-1, 1);
         self.game.particles.push(Particle {
-            x: ix,
-            y: iy,
+            x,
+            y,
+            vx,
+            vy,
+            ttl: 5,
+            kind: ParticleKind::Arc,
+        });
+    }
+
+    fn spawn_shard(&mut self, x: i16, y: i16) {
+        let vx = self.rand_i8(-1, 1);
+        let vy = self.rand_i8(-2, 0);
+        self.game.particles.push(Particle {
+            x,
+            y,
+            vx,
+            vy,
+            ttl: 6,
+            kind: ParticleKind::Shard,
+        });
+    }
+
+    fn spawn_smoke(&mut self, x: i16, y: i16) {
+        self.game.particles.push(Particle {
+            x,
+            y,
             vx: 0,
             vy: 0,
             ttl: 10,
@@ -733,7 +806,7 @@ impl App {
     }
 
     pub fn cycle_zoom(&mut self, delta: i16) {
-        let next = (self.ui.zoom as i16 + delta).clamp(1, 3) as u16;
+        let next = (self.ui.zoom as i16 + delta).clamp(1, 4) as u16;
         self.ui.zoom = next;
     }
 
@@ -943,6 +1016,39 @@ impl App {
                 cd_min: 6,
                 cd_max: 18,
             },
+            TowerKind::Cannon => TowerTuning {
+                base_attack: 120,
+                attack_step: 40,
+                base_range: 6,
+                range_every: 3,
+                base_cd: 32,
+                cd_drop_every: 3,
+                cd_drop: 2,
+                cd_min: 16,
+                cd_max: 36,
+            },
+            TowerKind::Tesla => TowerTuning {
+                base_attack: 55,
+                attack_step: 18,
+                base_range: 7,
+                range_every: 2,
+                base_cd: 14,
+                cd_drop_every: 3,
+                cd_drop: 1,
+                cd_min: 8,
+                cd_max: 18,
+            },
+            TowerKind::Frost => TowerTuning {
+                base_attack: 30,
+                attack_step: 12,
+                base_range: 7,
+                range_every: 2,
+                base_cd: 16,
+                cd_drop_every: 2,
+                cd_drop: 1,
+                cd_min: 10,
+                cd_max: 20,
+            },
         }
     }
 
@@ -951,6 +1057,9 @@ impl App {
             TowerKind::Basic => 50,
             TowerKind::Sniper => 80,
             TowerKind::Rapid => 45,
+            TowerKind::Cannon => 95,
+            TowerKind::Tesla => 70,
+            TowerKind::Frost => 60,
         }
     }
 
@@ -959,6 +1068,9 @@ impl App {
             TowerKind::Basic => 30,
             TowerKind::Sniper => 40,
             TowerKind::Rapid => 25,
+            TowerKind::Cannon => 45,
+            TowerKind::Tesla => 35,
+            TowerKind::Frost => 30,
         }
     }
 
@@ -974,8 +1086,15 @@ impl App {
         Some(Self::tower_stats(&t))
     }
 
-    pub fn available_towers() -> [TowerKind; 3] {
-        [TowerKind::Basic, TowerKind::Sniper, TowerKind::Rapid]
+    pub fn available_towers() -> [TowerKind; TOWER_KIND_COUNT] {
+        [
+            TowerKind::Basic,
+            TowerKind::Sniper,
+            TowerKind::Rapid,
+            TowerKind::Cannon,
+            TowerKind::Tesla,
+            TowerKind::Frost,
+        ]
     }
 
     pub fn toggle_build_kind(&mut self, kind: TowerKind) {
@@ -990,6 +1109,8 @@ impl App {
             Self::map_serpentine(),
             Self::map_cascade(),
             Self::map_spiral(),
+            Self::map_switchback(),
+            Self::map_crosswind(),
         ]
     }
 
@@ -1038,6 +1159,44 @@ impl App {
         Self::push_segment(&mut path, (grid_w - 4, grid_h - 6), (6, grid_h - 6));
         MapSpec {
             name: "Spiral",
+            grid_w,
+            grid_h,
+            path,
+        }
+    }
+
+    fn map_switchback() -> MapSpec {
+        let grid_w = 46;
+        let grid_h = 20;
+        let mut path = Vec::new();
+        Self::push_segment(&mut path, (1, 4), (grid_w - 2, 4));
+        Self::push_segment(&mut path, (grid_w - 2, 4), (grid_w - 2, 8));
+        Self::push_segment(&mut path, (grid_w - 2, 8), (2, 8));
+        Self::push_segment(&mut path, (2, 8), (2, 12));
+        Self::push_segment(&mut path, (2, 12), (grid_w - 3, 12));
+        Self::push_segment(&mut path, (grid_w - 3, 12), (grid_w - 3, grid_h - 3));
+        Self::push_segment(&mut path, (grid_w - 3, grid_h - 3), (6, grid_h - 3));
+        MapSpec {
+            name: "Switchback",
+            grid_w,
+            grid_h,
+            path,
+        }
+    }
+
+    fn map_crosswind() -> MapSpec {
+        let grid_w = 48;
+        let grid_h = 22;
+        let mut path = Vec::new();
+        Self::push_segment(&mut path, (1, 3), (grid_w - 2, 3));
+        Self::push_segment(&mut path, (grid_w - 2, 3), (grid_w - 2, 7));
+        Self::push_segment(&mut path, (grid_w - 2, 7), (4, 7));
+        Self::push_segment(&mut path, (4, 7), (4, 15));
+        Self::push_segment(&mut path, (4, 15), (grid_w - 4, 15));
+        Self::push_segment(&mut path, (grid_w - 4, 15), (grid_w - 4, grid_h - 3));
+        Self::push_segment(&mut path, (grid_w - 4, grid_h - 3), (2, grid_h - 3));
+        MapSpec {
+            name: "Crosswind",
             grid_w,
             grid_h,
             path,
