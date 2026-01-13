@@ -305,11 +305,16 @@ fn compute_viewport(app: &App, inner: Rect) -> MapViewport {
 fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(8), Constraint::Min(8)])
+        .constraints([
+            Constraint::Length(8),
+            Constraint::Min(8),
+            Constraint::Length(9),
+        ])
         .split(area);
 
     draw_build_panel(f, app, rows[0]);
     draw_inspector_panel(f, app, rows[1]);
+    draw_evolutions_panel(f, rows[2]);
 }
 
 fn draw_build_panel(f: &mut Frame, app: &mut App, area: Rect) {
@@ -659,10 +664,39 @@ fn draw_compact_info(f: &mut Frame, app: &App, area: Rect) {
             "Space start/pause • B build • U upgrade • S sell • F speed • Q quit",
             Style::default().fg(text_dim()),
         )),
+        Line::from(Span::styled(
+            "Evoluções: Tesla • Bosses • Terrenos especiais • Rotas dinâmicas • Endless",
+            Style::default().fg(text_dim()),
+        )),
     ];
 
     f.render_widget(
         Paragraph::new(txt)
+            .wrap(Wrap { trim: true })
+            .style(Style::default().fg(Color::White).bg(bg())),
+        inner,
+    );
+}
+
+fn draw_evolutions_panel(f: &mut Frame, area: Rect) {
+    let block = panel_block("Evoluções");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let lines = vec![
+        Line::from(Span::styled(
+            "Próximos passos sugeridos",
+            Style::default().fg(panel_title()),
+        )),
+        Line::from("• Torre Tesla: dano em área + micro stun"),
+        Line::from("• Boss a cada 5 ondas com recompensa rara"),
+        Line::from("• Terrenos especiais (pântano, alto, gelo)"),
+        Line::from("• Rotas dinâmicas com bifurcações"),
+        Line::from("• Modo infinito + placar de tempo"),
+    ];
+
+    f.render_widget(
+        Paragraph::new(lines)
             .wrap(Wrap { trim: true })
             .style(Style::default().fg(Color::White).bg(bg())),
         inner,
