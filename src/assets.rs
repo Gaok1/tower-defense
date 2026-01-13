@@ -231,22 +231,22 @@ pub fn enemy_sprite(zoom: u16) -> Sprite {
 pub const IMPACT_Z1: Sprite = Sprite {
     w: 2,
     h: 1,
-    rows: &["╳╳"],
+    rows: &["✸✹"],
 };
 pub const IMPACT_Z2: Sprite = Sprite {
     w: 4,
     h: 2,
-    rows: &["╳╳╳╳", "╳╳╳╳"],
+    rows: &["✸✹✸✹", "✹✸✹✸"],
 };
 pub const IMPACT_Z3: Sprite = Sprite {
     w: 6,
     h: 3,
-    rows: &[" ╳╳╳╳ ", "╳╳╳╳╳╳", " ╳╳╳╳ "],
+    rows: &[" ✸✹✸✹ ", "✹✸✹✸✹✸", " ✸✹✸✹ "],
 };
 pub const IMPACT_Z4: Sprite = Sprite {
     w: 8,
     h: 4,
-    rows: &["  ╳╳╳╳  ", " ╳╳╳╳╳╳ ", " ╳╳╳╳╳╳ ", "  ╳╳╳╳  "],
+    rows: &["  ✸✹✸✹  ", " ✹✸✹✸✹✸ ", " ✸✹✸✹✸✹ ", "  ✹✸✹✸  "],
 };
 
 pub fn impact_sprite(zoom: u16) -> Sprite {
@@ -262,15 +262,18 @@ pub fn impact_sprite(zoom: u16) -> Sprite {
 // Disparo / Partículas (1 célula)
 // ---------------------------
 
-pub const GLYPH_PROJECTILE_BASIC: &str = "·";
-pub const GLYPH_PROJECTILE_SNIPER: &str = "•";
-pub const GLYPH_PROJECTILE_RAPID: &str = "∙";
-pub const GLYPH_PROJECTILE_CANNON: &str = "●";
-pub const GLYPH_PROJECTILE_TESLA: &str = "◈";
-pub const GLYPH_PROJECTILE_FROST: &str = "◇";
+pub const GLYPH_PROJECTILE_BASIC: &str = "➤";
+pub const GLYPH_PROJECTILE_SNIPER: &str = "⟡";
+pub const GLYPH_PROJECTILE_RAPID: &str = "✦";
+pub const GLYPH_PROJECTILE_CANNON: &str = "⬤";
+pub const GLYPH_PROJECTILE_TESLA: &str = "⚡";
+pub const GLYPH_PROJECTILE_FROST: &str = "❄";
 
-pub const TRAIL: [&str; 4] = ["•", "∙", "·", "˙"];
-pub const SPARK: [&str; 4] = ["✦", "✧", "*", "·"];
-pub const SMOKE: [&str; 4] = ["▓", "▒", "░", "·"];
-pub const ARC: [&str; 4] = ["╍", "┄", "┈", "·"];
-pub const SHARD: [&str; 4] = ["◆", "◇", "⋄", "·"];
+pub const TRAIL: [&str; 4] = ["✧", "✦", "∙", "·"];
+pub const SPARK: [&str; 4] = ["✹", "✸", "✷", "·"];
+pub const SMOKE: [&str; 4] = ["▓", "▒", "░", "∙"];
+pub const ARC: [&str; 4] = ["⚡", "╱", "╲", "·"];
+pub const SHARD: [&str; 4] = ["✷", "✶", "✵", "·"];
+pub const BOLT: [&str; 4] = ["⚡", "⟋", "⟍", "·"];
+pub const FROST: [&str; 4] = ["❄", "✳", "✱", "·"];
+pub const WAVE: [&str; 4] = ["✺", "✹", "✷", "·"];
