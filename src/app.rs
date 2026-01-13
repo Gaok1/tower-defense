@@ -450,7 +450,7 @@ impl App {
                 p.step_cd -= sp;
                 continue;
             }
-            p.step_cd = self.projectile_step_cd(p.kind);
+            p.step_cd = Self::projectile_step_cd(p.kind);
 
             let old_x = p.x;
             let old_y = p.y;
@@ -549,7 +549,7 @@ impl App {
         14
     }
 
-    fn projectile_step_cd(&self, kind: TowerKind) -> u16 {
+    fn projectile_step_cd(kind: TowerKind) -> u16 {
         match kind {
             TowerKind::Rapid => 1,
             TowerKind::Tesla => 1,
@@ -586,7 +586,7 @@ impl App {
             ty: to_y as i16,
             ttl,
             damage: dmg,
-            step_cd: self.projectile_step_cd(kind),
+            step_cd: Self::projectile_step_cd(kind),
             kind,
             source_level: level,
         });
