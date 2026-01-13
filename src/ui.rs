@@ -67,6 +67,37 @@ fn map_bg(zoom: u16) -> Color {
     }
 }
 
+#[inline]
+fn path_bg(zoom: u16) -> Color {
+    match zoom {
+        1 => Color::Rgb(20, 20, 10),
+        2 => Color::Rgb(26, 26, 12),
+        3 => Color::Rgb(32, 32, 14),
+        _ => Color::Rgb(38, 38, 16),
+    }
+}
+
+#[inline]
+fn goal_bg(zoom: u16) -> Color {
+    match zoom {
+        1 => Color::Rgb(20, 12, 26),
+        2 => Color::Rgb(26, 16, 32),
+        3 => Color::Rgb(32, 20, 38),
+        _ => Color::Rgb(38, 24, 44),
+    }
+}
+
+#[inline]
+fn tile_bg(zoom: u16, is_path: bool, is_goal: bool) -> Color {
+    if is_goal {
+        goal_bg(zoom)
+    } else if is_path {
+        path_bg(zoom)
+    } else {
+        map_bg(zoom)
+    }
+}
+
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.size();
     app.set_layout_mode_from_size(area);
@@ -793,7 +824,14 @@ impl<'a> Widget for MapWidget<'a> {
             .and_then(|kind| app.game.selected_cell.map(|cell| (cell, kind)))
             .filter(|((x, y), kind)| app.can_build_at(*x, *y, *kind));
 
+        let tile_base_bg = |cell_x: u16, cell_y: u16| -> Color {
+            let is_goal = goal == Some((cell_x, cell_y));
+            let is_path = app.is_path(cell_x, cell_y);
+            tile_bg(app.ui.zoom, is_path, is_goal)
+        };
+
         let cell_bg = |cell_x: u16, cell_y: u16| -> Color {
+            let base_bg = tile_base_bg(cell_x, cell_y);
             if app.game.selected_cell == Some((cell_x, cell_y)) {
                 Color::Blue
             } else if app.ui.hover_cell == Some((cell_x, cell_y)) {
@@ -802,10 +840,10 @@ impl<'a> Widget for MapWidget<'a> {
                 if range_match(shape, cell_x, cell_y, rx, ry, range) {
                     Color::Blue
                 } else {
-                    map_bg(app.ui.zoom)
+                    base_bg
                 }
             } else {
-                map_bg(app.ui.zoom)
+                base_bg
             }
         };
 
@@ -835,20 +873,21 @@ impl<'a> Widget for MapWidget<'a> {
                 let is_sel = app.game.selected_cell == Some((cell_x, cell_y));
 
                 let mut tile = assets::GLYPH_GRASS[(cell_x as usize + cell_y as usize) % 4];
-                let mut style = Style::default().fg(Color::Green).bg(map_bg(app.ui.zoom));
+                let base_bg = tile_base_bg(cell_x, cell_y);
+                let mut style = Style::default().fg(Color::Green).bg(base_bg);
 
                 if app.is_path(cell_x, cell_y) {
                     tile = assets::GLYPH_PATH[(cell_x as usize + cell_y as usize) % 2];
                     style = Style::default()
                         .fg(Color::LightYellow)
-                        .bg(map_bg(app.ui.zoom));
+                        .bg(base_bg);
                 }
 
                 if goal == Some((cell_x, cell_y)) {
                     tile = assets::GLYPH_GOAL;
                     style = Style::default()
                         .fg(Color::LightMagenta)
-                        .bg(map_bg(app.ui.zoom))
+                        .bg(base_bg)
                         .add_modifier(Modifier::BOLD);
                 }
 
@@ -868,7 +907,7 @@ impl<'a> Widget for MapWidget<'a> {
                         } else {
                             tower_kind_color(t.kind)
                         })
-                        .bg(map_bg(app.ui.zoom))
+                        .bg(base_bg)
                         .add_modifier(Modifier::BOLD);
                 }
 
@@ -884,7 +923,7 @@ impl<'a> Widget for MapWidget<'a> {
                         };
                         style = Style::default()
                             .fg(tower_kind_color(preview_kind))
-                            .bg(map_bg(app.ui.zoom))
+                            .bg(base_bg)
                             .add_modifier(Modifier::DIM);
                     }
                 }
@@ -893,7 +932,7 @@ impl<'a> Widget for MapWidget<'a> {
                     tile = assets::GLYPH_ENEMY;
                     style = Style::default()
                         .fg(Color::Red)
-                        .bg(map_bg(app.ui.zoom))
+                        .bg(base_bg)
                         .add_modifier(Modifier::BOLD);
                 }
 
@@ -909,14 +948,14 @@ impl<'a> Widget for MapWidget<'a> {
                     style = match fx.ttl {
                         4 => Style::default()
                             .fg(base_color)
-                            .bg(map_bg(app.ui.zoom))
+                            .bg(base_bg)
                             .add_modifier(Modifier::BOLD),
                         3 => Style::default()
                             .fg(base_color)
-                            .bg(map_bg(app.ui.zoom))
+                            .bg(base_bg)
                             .add_modifier(Modifier::DIM),
-                        2 => Style::default().fg(Color::DarkGray).bg(map_bg(app.ui.zoom)),
-                        _ => Style::default().fg(text_dim()).bg(map_bg(app.ui.zoom)),
+                        2 => Style::default().fg(Color::DarkGray).bg(base_bg),
+                        _ => Style::default().fg(text_dim()).bg(base_bg),
                     };
                 }
 
@@ -1188,25 +1227,27 @@ impl<'a> Widget for MapPreviewWidget<'a> {
                 let sy = area.y + gy * tile_h;
 
                 let mut tile = assets::GLYPH_GRASS[(cell_x as usize + cell_y as usize) % 4];
-                let mut style = Style::default().fg(Color::Green).bg(map_bg(self.zoom));
-
-                if self
+                let is_goal = goal == Some((cell_x, cell_y));
+                let is_path = self
                     .map
                     .path
                     .iter()
-                    .any(|&(px, py)| px == cell_x && py == cell_y)
-                {
+                    .any(|&(px, py)| px == cell_x && py == cell_y);
+                let base_bg = tile_bg(self.zoom, is_path, is_goal);
+                let mut style = Style::default().fg(Color::Green).bg(base_bg);
+
+                if is_path {
                     tile = assets::GLYPH_PATH[(cell_x as usize + cell_y as usize) % 2];
                     style = Style::default()
                         .fg(Color::LightYellow)
-                        .bg(map_bg(self.zoom));
+                        .bg(base_bg);
                 }
 
                 if goal == Some((cell_x, cell_y)) {
                     tile = assets::GLYPH_GOAL;
                     style = Style::default()
                         .fg(Color::LightMagenta)
-                        .bg(map_bg(self.zoom))
+                        .bg(base_bg)
                         .add_modifier(Modifier::BOLD);
                 }
 
