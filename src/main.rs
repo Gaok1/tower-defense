@@ -1,6 +1,7 @@
 mod app;
 mod assets;
 mod input;
+mod save;
 mod ui;
 
 use anyhow::Result;

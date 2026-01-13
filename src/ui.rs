@@ -7,8 +7,8 @@ use ratatui::{
 
 use crate::{
     app::{
-        App, ButtonId, HoverAction, LayoutMode, MapSelectAction, MapSpec, MapViewport,
-        ParticleKind, Screen, TOWER_KIND_COUNT, TowerKind,
+        App, ButtonId, HoverAction, LayoutMode, LoadMenuFocus, MapSelectAction, MapSpec,
+        MapViewport, ParticleKind, Screen, TOWER_KIND_COUNT, TowerKind,
     },
     assets,
 };
@@ -67,14 +67,47 @@ fn map_bg(zoom: u16) -> Color {
     }
 }
 
+#[inline]
+fn path_bg(zoom: u16) -> Color {
+    match zoom {
+        1 => Color::Rgb(20, 20, 10),
+        2 => Color::Rgb(26, 26, 12),
+        3 => Color::Rgb(32, 32, 14),
+        _ => Color::Rgb(38, 38, 16),
+    }
+}
+
+#[inline]
+fn goal_bg(zoom: u16) -> Color {
+    match zoom {
+        1 => Color::Rgb(20, 12, 26),
+        2 => Color::Rgb(26, 16, 32),
+        3 => Color::Rgb(32, 20, 38),
+        _ => Color::Rgb(38, 24, 44),
+    }
+}
+
+#[inline]
+fn tile_bg(zoom: u16, is_path: bool, is_goal: bool) -> Color {
+    if is_goal {
+        goal_bg(zoom)
+    } else if is_path {
+        path_bg(zoom)
+    } else {
+        map_bg(zoom)
+    }
+}
+
 pub fn draw(f: &mut Frame, app: &mut App) {
-    let area = f.size();
+    let area = f.area();
     app.set_layout_mode_from_size(area);
 
     f.render_widget(Block::default().style(Style::default().bg(bg())), area);
 
     match app.screen {
+        Screen::MainMenu => draw_main_menu(f, app, area),
         Screen::MapSelect => draw_map_select(f, app, area),
+        Screen::LoadGame => draw_load_game(f, app, area),
         Screen::Game => match app.ui.mode {
             LayoutMode::Wide => draw_wide(f, app, area),
             LayoutMode::Compact => draw_compact(f, app, area),
@@ -151,7 +184,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     // Brand
-    let title = Paragraph::new(Line::from(vec![
+    let mut brand = vec![
         Span::styled(
             " TOWER TD ",
             Style::default()
@@ -166,14 +199,26 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
                 .fg(if app.game.running { good() } else { warn() })
                 .add_modifier(Modifier::BOLD),
         ),
-    ]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(panel_border())),
-    )
-    .style(Style::default().bg(bg()));
+    ];
+
+    if app.dev_mode {
+        brand.push(Span::raw("  "));
+        brand.push(Span::styled(
+            "DEV",
+            Style::default()
+                .fg(Color::LightMagenta)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    let title = Paragraph::new(Line::from(brand))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(panel_border())),
+        )
+        .style(Style::default().bg(bg()));
     f.render_widget(title, cols[0]);
 
     // Center: wave progress
@@ -197,10 +242,27 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
 
     // Right: stats
     let stats = Paragraph::new(Line::from(vec![
-        Span::styled(format!("$ {}", app.game.money), Style::default().fg(warn())),
+        Span::styled(
+            format!(
+                "$ {}",
+                if app.dev_mode {
+                    "∞".to_string()
+                } else {
+                    app.game.money.to_string()
+                }
+            ),
+            Style::default().fg(warn()),
+        ),
         Span::raw("  "),
         Span::styled(
-            format!("HP {}", app.game.lives),
+            format!(
+                "HP {}",
+                if app.dev_mode {
+                    "∞".to_string()
+                } else {
+                    app.game.lives.to_string()
+                }
+            ),
             Style::default().fg(danger()),
         ),
         Span::raw("  "),
@@ -281,21 +343,35 @@ fn draw_map_panel(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-fn compute_viewport(app: &App, inner: Rect) -> MapViewport {
+fn compute_viewport(app: &mut App, inner: Rect) -> MapViewport {
     let mut vp = MapViewport::default();
-    vp.tile_w = 2 * app.ui.zoom.max(1);
-    vp.tile_h = 1;
+
+    let z = app.ui.zoom.max(1);
+    vp.tile_w = 2 * z;
+    vp.tile_h = z;
 
     vp.vis_w = (inner.width / vp.tile_w).max(1).min(app.game.grid_w);
-    vp.vis_h = inner.height.max(1).min(app.game.grid_h);
-
-    let mut vx = app.ui.viewport.view_x;
-    let mut vy = app.ui.viewport.view_y;
+    vp.vis_h = (inner.height / vp.tile_h).max(1).min(app.game.grid_h);
 
     let max_x = app.game.grid_w.saturating_sub(vp.vis_w);
     let max_y = app.game.grid_h.saturating_sub(vp.vis_h);
-    vx = vx.min(max_x);
-    vy = vy.min(max_y);
+
+    // Se mudou o zoom, tenta manter “âncora” no hover (ou selected)
+    if app.ui.last_zoom != app.ui.zoom {
+        app.ui.last_zoom = app.ui.zoom;
+        app.ui.manual_pan = true;
+
+        if let Some((ax, ay)) = app.ui.hover_cell.or(app.game.selected_cell) {
+            let nx = ax.saturating_sub(vp.vis_w / 2).min(max_x);
+            let ny = ay.saturating_sub(vp.vis_h / 2).min(max_y);
+            vp.view_x = nx;
+            vp.view_y = ny;
+            return vp;
+        }
+    }
+
+    let mut vx = app.ui.viewport.view_x.min(max_x);
+    let mut vy = app.ui.viewport.view_y.min(max_y);
 
     if !app.ui.manual_pan {
         if app.ui.viewport.view_x == 0 && app.ui.viewport.view_y == 0 {
@@ -661,8 +737,21 @@ fn draw_compact_info(f: &mut Frame, app: &App, area: Rect) {
 
     let txt = vec![
         Line::from(format!(
-            "Wave {} | Lives {} | $ {} | Speed x{} | Zoom {}",
-            app.game.wave, app.game.lives, app.game.money, app.game.speed, app.ui.zoom
+            "Wave {} | Lives {} | $ {} | Speed x{} | Zoom {}{}",
+            app.game.wave,
+            if app.dev_mode {
+                "∞".to_string()
+            } else {
+                app.game.lives.to_string()
+            },
+            if app.dev_mode {
+                "∞".to_string()
+            } else {
+                app.game.money.to_string()
+            },
+            app.game.speed,
+            app.ui.zoom,
+            if app.dev_mode { " | DEV" } else { "" }
         )),
         Line::from(sel),
         Line::from(format!(
@@ -776,6 +865,57 @@ fn draw_footer_buttons(f: &mut Frame, app: &mut App, area: Rect) {
 // ------------------------------------------------------------
 // Map Widget
 // ------------------------------------------------------------
+#[inline]
+fn hash32(mut v: u32) -> u32 {
+    // hash simples e rápido (bom o suficiente pra textura procedural)
+    v ^= v >> 16;
+    v = v.wrapping_mul(0x7feb352d);
+    v ^= v >> 15;
+    v = v.wrapping_mul(0x846ca68b);
+    v ^= v >> 16;
+    v
+}
+
+#[inline]
+fn tex_pick(cell_x: u16, cell_y: u16, dx: u16, dy: u16, salt: u32, m: u32) -> u32 {
+    let v = (cell_x as u32)
+        ^ ((cell_y as u32) << 11)
+        ^ ((dx as u32) << 21)
+        ^ ((dy as u32) << 27)
+        ^ salt;
+    hash32(v) % m
+}
+
+fn draw_sprite(
+    buf: &mut Buffer,
+    tile_x: u16,
+    tile_y: u16,
+    tile_w: u16,
+    tile_h: u16,
+    sprite: assets::Sprite,
+    style: Style,
+) {
+    let h = sprite.h.min(tile_h) as usize;
+    let w = sprite.w.min(tile_w) as usize;
+    for sy in 0..h {
+        let row = sprite.row(sy);
+        for (sx, ch) in row.chars().take(w).enumerate() {
+            if ch == ' ' {
+                continue;
+            }
+            let x = tile_x + sx as u16;
+            let y = tile_y + sy as u16;
+            if x >= tile_x + tile_w || y >= tile_y + tile_h {
+                continue;
+            }
+            let mut tmp = [0u8; 4];
+            let sym = ch.encode_utf8(&mut tmp);
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_symbol(sym).set_style(style);
+            }
+        }
+    }
+}
 
 struct MapWidget<'a> {
     app: &'a App,
@@ -785,40 +925,21 @@ impl<'a> Widget for MapWidget<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let app = self.app;
         let vp = app.ui.viewport;
-        let range_focus = range_focus(app);
-        let goal = app.game.path.last().copied();
-        let build_preview = app
-            .game
-            .build_kind
-            .and_then(|kind| app.game.selected_cell.map(|cell| (cell, kind)))
-            .filter(|((x, y), kind)| app.can_build_at(*x, *y, *kind));
-
-        let cell_bg = |cell_x: u16, cell_y: u16| -> Color {
-            if app.game.selected_cell == Some((cell_x, cell_y)) {
-                Color::Blue
-            } else if app.ui.hover_cell == Some((cell_x, cell_y)) {
-                Color::DarkGray
-            } else if let Some((rx, ry, range, shape)) = range_focus {
-                if range_match(shape, cell_x, cell_y, rx, ry, range) {
-                    Color::Blue
-                } else {
-                    map_bg(app.ui.zoom)
-                }
-            } else {
-                map_bg(app.ui.zoom)
-            }
-        };
 
         if area.width == 0 || area.height == 0 || vp.vis_w == 0 || vp.vis_h == 0 {
             return;
         }
 
-        // fundo
+        let range_focus = range_focus(app);
+        let goal = app.game.path.last().copied();
+
+        // fundo do painel do mapa
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
-                buf.get_mut(x, y)
-                    .set_symbol(" ")
-                    .set_style(Style::default().bg(map_bg(app.ui.zoom)));
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_symbol(" ")
+                        .set_style(Style::default().bg(map_bg(app.ui.zoom)));
+                }
             }
         }
 
@@ -828,127 +949,128 @@ impl<'a> Widget for MapWidget<'a> {
                 let cell_x = vp.view_x + gx;
                 let cell_y = vp.view_y + gy;
 
-                let sx = area.x + gx * vp.tile_w;
-                let sy = area.y + gy * vp.tile_h;
+                let tile_x = area.x + gx * vp.tile_w;
+                let tile_y = area.y + gy * vp.tile_h;
 
-                let is_hover = app.ui.hover_cell == Some((cell_x, cell_y));
-                let is_sel = app.game.selected_cell == Some((cell_x, cell_y));
+                let is_goal = goal == Some((cell_x, cell_y));
+                let is_path = app.is_path(cell_x, cell_y);
 
-                let mut tile = assets::GLYPH_GRASS[(cell_x as usize + cell_y as usize) % 4];
-                let mut style = Style::default().fg(Color::Green).bg(map_bg(app.ui.zoom));
+                let base_bg = tile_bg(app.ui.zoom, is_path, is_goal);
 
-                if app.is_path(cell_x, cell_y) {
-                    tile = assets::GLYPH_PATH[(cell_x as usize + cell_y as usize) % 2];
-                    style = Style::default()
-                        .fg(Color::LightYellow)
-                        .bg(map_bg(app.ui.zoom));
+                // highlight (seleção/hover/range)
+                let mut hl_bg = base_bg;
+                if app.game.selected_cell == Some((cell_x, cell_y)) {
+                    hl_bg = Color::Blue;
+                } else if app.ui.hover_cell == Some((cell_x, cell_y)) {
+                    hl_bg = Color::DarkGray;
+                } else if let Some((rx, ry, range, shape)) = range_focus {
+                    if range_match(shape, cell_x, cell_y, rx, ry, range) {
+                        hl_bg = Color::Blue;
+                    }
                 }
 
-                if goal == Some((cell_x, cell_y)) {
-                    tile = assets::GLYPH_GOAL;
-                    style = Style::default()
-                        .fg(Color::LightMagenta)
-                        .bg(map_bg(app.ui.zoom))
-                        .add_modifier(Modifier::BOLD);
+                // textura procedural do terreno (preenche o retângulo inteiro do tile)
+                for dy in 0..vp.tile_h {
+                    for dx in 0..vp.tile_w {
+                        let (sym, fg) = if is_goal {
+                            let cx = vp.tile_w / 2;
+                            let cy = vp.tile_h / 2;
+                            if dx == cx && dy == cy {
+                                ("◎", Color::LightMagenta)
+                            } else {
+                                let k = tex_pick(cell_x, cell_y, dx, dy, 0xBEEF_u32, 3);
+                                (["░", "▒", "▓"][k as usize], Color::Magenta)
+                            }
+                        } else if is_path {
+                            let k = tex_pick(cell_x, cell_y, dx, dy, 0xCAFE_u32, 5);
+                            (["▒", "▒", "▓", "▒", "░"][k as usize], Color::LightYellow)
+                        } else {
+                            let k = tex_pick(cell_x, cell_y, dx, dy, 0x1234_u32, 7);
+                            (
+                                ["░", "░", "▒", "░", "▒", "░", "▒"][k as usize],
+                                Color::Green,
+                            )
+                        };
+
+                        let x = tile_x + dx;
+                        let y = tile_y + dy;
+                        if x < area.right() && y < area.bottom() {
+                            if let Some(cell) = buf.cell_mut((x, y)) {
+                                cell.set_symbol(sym)
+                                    .set_style(Style::default().fg(fg).bg(hl_bg));
+                            }
+                        }
+                    }
                 }
 
+                // build preview (só no tile alvo)
+                if let Some(kind) = app.game.build_kind {
+                    if let Some((sx, sy)) = app.game.selected_cell {
+                        if (sx, sy) == (cell_x, cell_y) && app.can_build_at(cell_x, cell_y, kind) {
+                            let spr = assets::tower_sprite(kind, app.ui.zoom);
+                            let st = Style::default()
+                                .fg(tower_kind_color(kind))
+                                .bg(hl_bg)
+                                .add_modifier(Modifier::DIM);
+                            draw_sprite(buf, tile_x, tile_y, vp.tile_w, vp.tile_h, spr, st);
+                        }
+                    }
+                }
+
+                // torre real
                 if let Some(ti) = app.tower_index_at(cell_x, cell_y) {
                     let t = &app.game.towers[ti];
-                    tile = match t.kind {
-                        TowerKind::Basic => assets::GLYPH_TOWER_BASIC,
-                        TowerKind::Sniper => assets::GLYPH_TOWER_SNIPER,
-                        TowerKind::Rapid => assets::GLYPH_TOWER_RAPID,
-                        TowerKind::Cannon => assets::GLYPH_TOWER_CANNON,
-                        TowerKind::Tesla => assets::GLYPH_TOWER_TESLA,
-                        TowerKind::Frost => assets::GLYPH_TOWER_FROST,
-                    };
-                    style = Style::default()
+                    let spr = assets::tower_sprite(t.kind, app.ui.zoom);
+
+                    let st = Style::default()
                         .fg(if t.level >= 4 {
                             warn()
                         } else {
                             tower_kind_color(t.kind)
                         })
-                        .bg(map_bg(app.ui.zoom))
+                        .bg(hl_bg)
                         .add_modifier(Modifier::BOLD);
+
+                    draw_sprite(buf, tile_x, tile_y, vp.tile_w, vp.tile_h, spr, st);
                 }
 
-                if let Some(((px, py), preview_kind)) = build_preview {
-                    if (cell_x, cell_y) == (px, py) {
-                        tile = match preview_kind {
-                            TowerKind::Basic => assets::GLYPH_TOWER_BASIC,
-                            TowerKind::Sniper => assets::GLYPH_TOWER_SNIPER,
-                            TowerKind::Rapid => assets::GLYPH_TOWER_RAPID,
-                            TowerKind::Cannon => assets::GLYPH_TOWER_CANNON,
-                            TowerKind::Tesla => assets::GLYPH_TOWER_TESLA,
-                            TowerKind::Frost => assets::GLYPH_TOWER_FROST,
-                        };
-                        style = Style::default()
-                            .fg(tower_kind_color(preview_kind))
-                            .bg(map_bg(app.ui.zoom))
-                            .add_modifier(Modifier::DIM);
-                    }
-                }
-
+                // inimigo por cima
                 if app.enemy_at(cell_x, cell_y) {
-                    tile = assets::GLYPH_ENEMY;
-                    style = Style::default()
+                    let spr = assets::enemy_sprite(app.ui.zoom);
+                    let st = Style::default()
                         .fg(Color::Red)
-                        .bg(map_bg(app.ui.zoom))
+                        .bg(hl_bg)
                         .add_modifier(Modifier::BOLD);
+                    draw_sprite(buf, tile_x, tile_y, vp.tile_w, vp.tile_h, spr, st);
                 }
 
-                // impacto grande por cima do tile
+                // impacto por cima de tudo
                 if let Some(fx) = app
                     .game
                     .impacts
                     .iter()
                     .find(|fx| fx.x == cell_x && fx.y == cell_y)
                 {
-                    tile = assets::GLYPH_IMPACT_BIG;
+                    let spr = assets::impact_sprite(app.ui.zoom);
                     let base_color = tower_kind_color(fx.kind);
-                    style = match fx.ttl {
+                    let st = match fx.ttl {
                         4 => Style::default()
                             .fg(base_color)
-                            .bg(map_bg(app.ui.zoom))
+                            .bg(hl_bg)
                             .add_modifier(Modifier::BOLD),
                         3 => Style::default()
                             .fg(base_color)
-                            .bg(map_bg(app.ui.zoom))
+                            .bg(hl_bg)
                             .add_modifier(Modifier::DIM),
-                        2 => Style::default().fg(Color::DarkGray).bg(map_bg(app.ui.zoom)),
-                        _ => Style::default().fg(text_dim()).bg(map_bg(app.ui.zoom)),
+                        2 => Style::default().fg(Color::DarkGray).bg(hl_bg),
+                        _ => Style::default().fg(text_dim()).bg(hl_bg),
                     };
-                }
-
-                if is_sel {
-                    style = style.bg(Color::Blue).fg(Color::White);
-                } else if is_hover {
-                    style = style.bg(Color::DarkGray).fg(Color::Black);
-                } else if let Some((rx, ry, range, shape)) = range_focus {
-                    if range_match(shape, cell_x, cell_y, rx, ry, range) {
-                        style = style.bg(Color::Blue);
-                    }
-                }
-
-                // tile_w>=2 -> glifos duplos + padding
-                if sx < area.right() && sy < area.bottom() {
-                    buf.get_mut(sx, sy).set_symbol(tile.left).set_style(style);
-                }
-                if sx + 1 < area.right() && sy < area.bottom() {
-                    buf.get_mut(sx + 1, sy)
-                        .set_symbol(tile.right)
-                        .set_style(style);
-                }
-                for pad in 2..vp.tile_w {
-                    if sx + pad < area.right() && sy < area.bottom() {
-                        let glyph = if pad % 2 == 0 { tile.left } else { tile.right };
-                        buf.get_mut(sx + pad, sy).set_symbol(glyph).set_style(style);
-                    }
+                    draw_sprite(buf, tile_x, tile_y, vp.tile_w, vp.tile_h, spr, st);
                 }
             }
         }
 
-        // projéteis
+        // projéteis (agora no “meio” do tile em X e Y)
         for p in &app.game.projectiles {
             if p.x < 0 || p.y < 0 {
                 continue;
@@ -963,9 +1085,12 @@ impl<'a> Widget for MapWidget<'a> {
             if gx >= vp.vis_w || gy >= vp.vis_h {
                 continue;
             }
-            let sx = area.x + gx * vp.tile_w;
-            let sy = area.y + gy * vp.tile_h;
-            let bg_color = cell_bg(cx, cy);
+
+            let tile_x = area.x + gx * vp.tile_w;
+            let tile_y = area.y + gy * vp.tile_h;
+
+            let mid_x = tile_x + (vp.tile_w / 2).min(vp.tile_w.saturating_sub(1));
+            let mid_y = tile_y + (vp.tile_h / 2).min(vp.tile_h.saturating_sub(1));
 
             let (sym, color) = match p.kind {
                 TowerKind::Basic => (assets::GLYPH_PROJECTILE_BASIC, Color::LightMagenta),
@@ -975,17 +1100,16 @@ impl<'a> Widget for MapWidget<'a> {
                 TowerKind::Tesla => (assets::GLYPH_PROJECTILE_TESLA, Color::LightBlue),
                 TowerKind::Frost => (assets::GLYPH_PROJECTILE_FROST, Color::LightBlue),
             };
-            let style = Style::default()
-                .fg(color)
-                .bg(bg_color)
-                .add_modifier(Modifier::BOLD);
-            let mid = sx + (vp.tile_w.saturating_sub(1) / 2).max(1);
-            if mid < area.right() && sy < area.bottom() {
-                buf.get_mut(mid, sy).set_symbol(sym).set_style(style);
+
+            if mid_x < area.right() && mid_y < area.bottom() {
+                if let Some(cell) = buf.cell_mut((mid_x, mid_y)) {
+                    cell.set_symbol(sym)
+                        .set_style(Style::default().fg(color).add_modifier(Modifier::BOLD));
+                }
             }
         }
 
-        // partículas
+        // partículas (também centralizadas em X/Y)
         for p in &app.game.particles {
             if p.x < 0 || p.y < 0 {
                 continue;
@@ -1000,18 +1124,237 @@ impl<'a> Widget for MapWidget<'a> {
             if gx >= vp.vis_w || gy >= vp.vis_h {
                 continue;
             }
-            let sx = area.x + gx * vp.tile_w;
-            let sy = area.y + gy * vp.tile_h;
-            let bg_color = cell_bg(cx, cy);
 
-            let (sym, style) = particle_visual(p.kind, p.ttl);
-            let style = style.bg(bg_color);
-            let mid = sx + (vp.tile_w.saturating_sub(1) / 2).max(1);
-            if mid < area.right() && sy < area.bottom() {
-                buf.get_mut(mid, sy).set_symbol(sym).set_style(style);
+            let tile_x = area.x + gx * vp.tile_w;
+            let tile_y = area.y + gy * vp.tile_h;
+
+            let mid_x = tile_x + (vp.tile_w / 2).min(vp.tile_w.saturating_sub(1));
+            let mid_y = tile_y + (vp.tile_h / 2).min(vp.tile_h.saturating_sub(1));
+
+            let (sym, st) = particle_visual(p.kind, p.ttl);
+
+            if mid_x < area.right() && mid_y < area.bottom() {
+                if let Some(cell) = buf.cell_mut((mid_x, mid_y)) {
+                    cell.set_symbol(sym)
+                        .set_style(st.add_modifier(Modifier::BOLD));
+                }
             }
         }
     }
+}
+
+fn draw_main_menu(f: &mut Frame, app: &mut App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Min(8),
+            Constraint::Length(3),
+        ])
+        .split(area);
+
+    let header = Paragraph::new(vec![
+        Line::from(vec![Span::styled(
+            " TOWER TD ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(accent())
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(Span::styled(
+            "Terminal Tower Defense",
+            Style::default().fg(text_dim()),
+        )),
+    ])
+    .alignment(Alignment::Center)
+    .block(panel_block("Menu"))
+    .style(Style::default().bg(bg()));
+    f.render_widget(header, rows[0]);
+
+    let block = panel_block("Start");
+    let inner = block.inner(rows[1]);
+    f.render_widget(block, rows[1]);
+
+    let options = ["New game", "Load saved game"];
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, label) in options.iter().enumerate() {
+        let selected = app.main_menu_index == i;
+        let style = if selected {
+            Style::default()
+                .fg(Color::Black)
+                .bg(accent())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White).bg(bg())
+        };
+        lines.push(Line::from(Span::styled(format!("  {label}  "), style)));
+    }
+
+    f.render_widget(
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .style(Style::default().bg(bg())),
+        inner,
+    );
+
+    let footer = Paragraph::new(Line::from(Span::styled(
+        "Up/Down select  •  Enter confirm  •  Q quit",
+        Style::default().fg(text_dim()),
+    )))
+    .alignment(Alignment::Center)
+    .block(panel_block("Help"))
+    .style(Style::default().bg(bg()));
+    f.render_widget(footer, rows[2]);
+}
+
+fn draw_load_game(f: &mut Frame, app: &mut App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(10),
+            Constraint::Length(3),
+        ])
+        .split(area);
+
+    let header = Paragraph::new(Line::from(vec![
+        Span::styled(
+            " LOAD GAME ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(accent())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled("↑/↓", Style::default().fg(text_dim())),
+        Span::raw(" move  "),
+        Span::styled("←/→", Style::default().fg(text_dim())),
+        Span::raw(" focus  "),
+        Span::styled("Enter", Style::default().fg(text_dim())),
+        Span::raw(" load"),
+    ]))
+    .alignment(Alignment::Center)
+    .block(panel_block("Saves"))
+    .style(Style::default().bg(bg()));
+    f.render_widget(header, rows[0]);
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(rows[1]);
+
+    let focus_slots = app.load_menu.focus == LoadMenuFocus::Slots;
+    let focus_waves = app.load_menu.focus == LoadMenuFocus::Waves;
+
+    // ---------------------- slots ----------------------
+    let slots_title = if focus_slots {
+        "Save Slots *"
+    } else {
+        "Save Slots"
+    };
+    let block = panel_block(slots_title);
+    let inner = block.inner(cols[0]);
+    f.render_widget(block, cols[0]);
+
+    let mut slot_lines: Vec<Line> = Vec::new();
+    if app.load_menu.slots.is_empty() {
+        slot_lines.push(Line::from(Span::styled(
+            "No saves found",
+            Style::default().fg(text_dim()),
+        )));
+    } else {
+        for (i, slot) in app.load_menu.slots.iter().enumerate() {
+            let selected = i == app.load_menu.selected_slot;
+            let style = if selected && focus_slots {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(accent())
+                    .add_modifier(Modifier::BOLD)
+            } else if selected {
+                Style::default().fg(Color::Black).bg(Color::DarkGray)
+            } else {
+                Style::default().fg(Color::White).bg(bg())
+            };
+
+            let last_wave = slot.waves.last().copied().unwrap_or(0);
+            let dev_tag = if slot.dev_mode { " DEV" } else { "" };
+            let short_id = &slot.id[..slot.id.len().min(8)];
+
+            slot_lines.push(Line::from(Span::styled(
+                format!(" {short_id}  {}  wave {last_wave}{dev_tag}", slot.map_name),
+                style,
+            )));
+        }
+    }
+
+    f.render_widget(
+        Paragraph::new(slot_lines)
+            .wrap(Wrap { trim: true })
+            .style(Style::default().bg(bg())),
+        inner,
+    );
+
+    // ---------------------- waves ----------------------
+    let waves_title = if focus_waves { "Waves *" } else { "Waves" };
+    let block = panel_block(waves_title);
+    let inner = block.inner(cols[1]);
+    f.render_widget(block, cols[1]);
+
+    let mut wave_lines: Vec<Line> = Vec::new();
+    let selected_slot = app.load_menu.slots.get(app.load_menu.selected_slot);
+    let waves = selected_slot.map(|s| s.waves.as_slice()).unwrap_or(&[]);
+
+    if waves.is_empty() {
+        wave_lines.push(Line::from(Span::styled(
+            "No wave checkpoints",
+            Style::default().fg(text_dim()),
+        )));
+    } else {
+        for (i, w) in waves.iter().enumerate() {
+            let selected = i == app.load_menu.selected_wave;
+            let style = if selected && focus_waves {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(accent())
+                    .add_modifier(Modifier::BOLD)
+            } else if selected {
+                Style::default().fg(Color::Black).bg(Color::DarkGray)
+            } else {
+                Style::default().fg(Color::White).bg(bg())
+            };
+
+            wave_lines.push(Line::from(Span::styled(format!(" Wave {w} "), style)));
+        }
+    }
+
+    f.render_widget(
+        Paragraph::new(wave_lines)
+            .wrap(Wrap { trim: true })
+            .style(Style::default().bg(bg())),
+        inner,
+    );
+
+    // ---------------------- footer ----------------------
+    let footer_text = if let Some(err) = app.load_menu.error.as_ref() {
+        Line::from(vec![
+            Span::styled(
+                "Error: ",
+                Style::default().fg(danger()).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(err.clone(), Style::default().fg(danger())),
+        ])
+    } else {
+        Line::from(Span::styled(
+            "Esc back  •  R refresh  •  Tab focus  •  Enter load  •  Q quit",
+            Style::default().fg(text_dim()),
+        ))
+    };
+
+    let footer = Paragraph::new(footer_text)
+        .alignment(Alignment::Center)
+        .block(panel_block("Help"))
+        .style(Style::default().bg(bg()));
+    f.render_widget(footer, rows[2]);
 }
 
 fn draw_map_select(f: &mut Frame, app: &mut App, area: Rect) {
@@ -1160,68 +1503,70 @@ impl<'a> Widget for MapPreviewWidget<'a> {
             return;
         }
 
-        let tile_w = 2 * self.zoom.max(1);
-        let tile_h = 1;
+        let z = self.zoom.max(1);
+        let tile_w = 2 * z;
+        let tile_h = z;
 
         let vis_w = (area.width / tile_w).max(1).min(self.map.grid_w);
-        let vis_h = area.height.max(1).min(self.map.grid_h);
+        let vis_h = (area.height / tile_h).max(1).min(self.map.grid_h);
 
         let view_x = self.map.grid_w.saturating_sub(vis_w) / 2;
         let view_y = self.map.grid_h.saturating_sub(vis_h) / 2;
 
+        let goal = self.map.path.last().copied();
+
+        // fundo
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
-                buf.get_mut(x, y)
-                    .set_symbol(" ")
-                    .set_style(Style::default().bg(map_bg(self.zoom)));
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_symbol(" ")
+                        .set_style(Style::default().bg(map_bg(z)));
+                }
             }
         }
-
-        let goal = self.map.path.last().copied();
 
         for gy in 0..vis_h {
             for gx in 0..vis_w {
                 let cell_x = view_x + gx;
                 let cell_y = view_y + gy;
 
-                let sx = area.x + gx * tile_w;
-                let sy = area.y + gy * tile_h;
+                let tile_x = area.x + gx * tile_w;
+                let tile_y = area.y + gy * tile_h;
 
-                let mut tile = assets::GLYPH_GRASS[(cell_x as usize + cell_y as usize) % 4];
-                let mut style = Style::default().fg(Color::Green).bg(map_bg(self.zoom));
-
-                if self
+                let is_goal = goal == Some((cell_x, cell_y));
+                let is_path = self
                     .map
                     .path
                     .iter()
-                    .any(|&(px, py)| px == cell_x && py == cell_y)
-                {
-                    tile = assets::GLYPH_PATH[(cell_x as usize + cell_y as usize) % 2];
-                    style = Style::default()
-                        .fg(Color::LightYellow)
-                        .bg(map_bg(self.zoom));
-                }
+                    .any(|&(px, py)| px == cell_x && py == cell_y);
 
-                if goal == Some((cell_x, cell_y)) {
-                    tile = assets::GLYPH_GOAL;
-                    style = Style::default()
-                        .fg(Color::LightMagenta)
-                        .bg(map_bg(self.zoom))
-                        .add_modifier(Modifier::BOLD);
-                }
+                let base_bg = tile_bg(z, is_path, is_goal);
 
-                if sx < area.right() && sy < area.bottom() {
-                    buf.get_mut(sx, sy).set_symbol(tile.left).set_style(style);
-                }
-                if sx + 1 < area.right() && sy < area.bottom() {
-                    buf.get_mut(sx + 1, sy)
-                        .set_symbol(tile.right)
-                        .set_style(style);
-                }
-                for pad in 2..tile_w {
-                    if sx + pad < area.right() && sy < area.bottom() {
-                        let glyph = if pad % 2 == 0 { tile.left } else { tile.right };
-                        buf.get_mut(sx + pad, sy).set_symbol(glyph).set_style(style);
+                for dy in 0..tile_h {
+                    for dx in 0..tile_w {
+                        let (sym, fg) = if is_goal {
+                            let cx = tile_w / 2;
+                            let cy = tile_h / 2;
+                            if dx == cx && dy == cy {
+                                ("◎", Color::LightMagenta)
+                            } else {
+                                ("░", Color::Magenta)
+                            }
+                        } else if is_path {
+                            ("▒", Color::LightYellow)
+                        } else {
+                            let k = tex_pick(cell_x, cell_y, dx, dy, 0x1234_u32, 5);
+                            (["░", "░", "▒", "░", "▒"][k as usize], Color::Green)
+                        };
+
+                        let x = tile_x + dx;
+                        let y = tile_y + dy;
+                        if x < area.right() && y < area.bottom() {
+                            if let Some(cell) = buf.cell_mut((x, y)) {
+                                cell.set_symbol(sym)
+                                    .set_style(Style::default().fg(fg).bg(base_bg));
+                            }
+                        }
                     }
                 }
             }

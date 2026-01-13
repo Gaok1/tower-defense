@@ -1,5 +1,6 @@
+use crate::save;
 use ratatui::layout::Rect;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutMode {
@@ -9,7 +10,9 @@ pub enum LayoutMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
+    MainMenu,
     MapSelect,
+    LoadGame,
     Game,
 }
 
@@ -30,6 +33,21 @@ pub enum MapSelectAction {
     Prev,
     Next,
     Start,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadMenuFocus {
+    Slots,
+    Waves,
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadMenuState {
+    pub slots: Vec<save::SaveSlotSummary>,
+    pub selected_slot: usize,
+    pub selected_wave: usize,
+    pub focus: LoadMenuFocus,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,6 +114,7 @@ pub struct UiState {
     pub hit: UiHitboxes,
     pub viewport: MapViewport,
     pub zoom: u16,
+    pub last_zoom: u16, // <-- NOVO (pra ancorar zoom sem “pular”)
     pub manual_pan: bool,
     pub drag_origin: Option<(u16, u16)>,
     pub drag_view: Option<(u16, u16)>,
@@ -216,6 +235,11 @@ pub struct GameState {
 pub struct App {
     pub should_quit: bool,
     pub screen: Screen,
+    pub dev_mode: bool,
+    pub save_slot: Option<String>,
+    pub last_save_error: Option<String>,
+    pub main_menu_index: usize,
+    pub load_menu: LoadMenuState,
 
     tick_rate: Duration,
     last_tick: Instant,
@@ -239,7 +263,7 @@ pub struct MapSpec {
 
 impl App {
     pub fn new() -> Self {
-        let mut rng = 0xC0FFEE_u64 ^ (Instant::now().elapsed().as_nanos() as u64);
+        let rng = 0xC0FFEE_u64 ^ (Instant::now().elapsed().as_nanos() as u64);
         let maps = Self::build_maps();
         let map_index = 0usize;
         let map = maps[map_index].clone();
@@ -247,7 +271,18 @@ impl App {
 
         let mut app = Self {
             should_quit: false,
-            screen: Screen::MapSelect,
+            screen: Screen::MainMenu,
+            dev_mode: false,
+            save_slot: None,
+            last_save_error: None,
+            main_menu_index: 0,
+            load_menu: LoadMenuState {
+                slots: vec![],
+                selected_slot: 0,
+                selected_wave: 0,
+                focus: LoadMenuFocus::Slots,
+                error: None,
+            },
             // tick mais curto -> animações mais suaves
             tick_rate: Duration::from_millis(50),
             last_tick: Instant::now(),
@@ -262,10 +297,12 @@ impl App {
                 hit: UiHitboxes::default(),
                 viewport: MapViewport::default(),
                 zoom: 2,
+                last_zoom: 2, // <-- NOVO
                 manual_pan: false,
                 drag_origin: None,
                 drag_view: None,
             },
+
             game: GameState {
                 running: false,
                 speed: 1,
@@ -308,6 +345,250 @@ impl App {
         };
     }
 
+    pub fn toggle_dev_mode(&mut self) {
+        self.dev_mode = !self.dev_mode;
+    }
+
+    pub fn main_menu_prev(&mut self) {
+        const COUNT: usize = 2; // New game / Load game
+        if COUNT == 0 {
+            return;
+        }
+        if self.main_menu_index == 0 {
+            self.main_menu_index = COUNT - 1;
+        } else {
+            self.main_menu_index -= 1;
+        }
+    }
+
+    pub fn main_menu_next(&mut self) {
+        const COUNT: usize = 2; // New game / Load game
+        if COUNT == 0 {
+            return;
+        }
+        self.main_menu_index = (self.main_menu_index + 1) % COUNT;
+    }
+
+    pub fn main_menu_activate(&mut self) {
+        match self.main_menu_index {
+            0 => self.screen = Screen::MapSelect,
+            1 => self.enter_load_game(),
+            _ => {}
+        }
+    }
+
+    pub fn enter_main_menu(&mut self) {
+        self.screen = Screen::MainMenu;
+    }
+
+    pub fn enter_load_game(&mut self) {
+        self.refresh_load_menu();
+        self.screen = Screen::LoadGame;
+    }
+
+    pub fn refresh_load_menu(&mut self) {
+        self.load_menu.focus = LoadMenuFocus::Slots;
+        self.load_menu.selected_slot = 0;
+        self.load_menu.selected_wave = 0;
+
+        match save::list_slots() {
+            Ok(slots) => {
+                self.load_menu.error = None;
+                self.load_menu.slots = slots;
+            }
+            Err(e) => {
+                self.load_menu.error = Some(e.to_string());
+                self.load_menu.slots = vec![];
+            }
+        }
+
+        self.clamp_load_menu_selection();
+    }
+
+    pub fn load_menu_focus_left(&mut self) {
+        self.load_menu.focus = LoadMenuFocus::Slots;
+    }
+
+    pub fn load_menu_focus_right(&mut self) {
+        self.load_menu.focus = LoadMenuFocus::Waves;
+    }
+
+    pub fn load_menu_prev(&mut self) {
+        match self.load_menu.focus {
+            LoadMenuFocus::Slots => {
+                let len = self.load_menu.slots.len();
+                if len == 0 {
+                    return;
+                }
+                if self.load_menu.selected_slot == 0 {
+                    self.load_menu.selected_slot = len - 1;
+                } else {
+                    self.load_menu.selected_slot -= 1;
+                }
+                self.load_menu.selected_wave = self.selected_slot_last_wave_index();
+            }
+            LoadMenuFocus::Waves => {
+                let waves_len = self.selected_slot_waves_len();
+                if waves_len == 0 {
+                    return;
+                }
+                if self.load_menu.selected_wave == 0 {
+                    self.load_menu.selected_wave = waves_len - 1;
+                } else {
+                    self.load_menu.selected_wave -= 1;
+                }
+            }
+        }
+    }
+
+    pub fn load_menu_next(&mut self) {
+        match self.load_menu.focus {
+            LoadMenuFocus::Slots => {
+                let len = self.load_menu.slots.len();
+                if len == 0 {
+                    return;
+                }
+                self.load_menu.selected_slot = (self.load_menu.selected_slot + 1) % len;
+                self.load_menu.selected_wave = self.selected_slot_last_wave_index();
+            }
+            LoadMenuFocus::Waves => {
+                let waves_len = self.selected_slot_waves_len();
+                if waves_len == 0 {
+                    return;
+                }
+                self.load_menu.selected_wave = (self.load_menu.selected_wave + 1) % waves_len;
+            }
+        }
+    }
+
+    pub fn load_menu_activate(&mut self) {
+        let Some(slot) = self.load_menu.slots.get(self.load_menu.selected_slot) else {
+            return;
+        };
+        let Some(&wave) = slot.waves.get(self.load_menu.selected_wave) else {
+            return;
+        };
+
+        match save::load_checkpoint(&slot.id, wave) {
+            Ok(checkpoint) => self.apply_loaded_checkpoint(slot.id.clone(), checkpoint),
+            Err(e) => self.load_menu.error = Some(e.to_string()),
+        }
+    }
+
+    fn clamp_load_menu_selection(&mut self) {
+        if self.load_menu.slots.is_empty() {
+            self.load_menu.selected_slot = 0;
+            self.load_menu.selected_wave = 0;
+            return;
+        }
+
+        if self.load_menu.selected_slot >= self.load_menu.slots.len() {
+            self.load_menu.selected_slot = self.load_menu.slots.len() - 1;
+        }
+        self.load_menu.selected_wave = self.selected_slot_last_wave_index();
+    }
+
+    fn selected_slot_waves_len(&self) -> usize {
+        self.load_menu
+            .slots
+            .get(self.load_menu.selected_slot)
+            .map(|s| s.waves.len())
+            .unwrap_or(0)
+    }
+
+    fn selected_slot_last_wave_index(&self) -> usize {
+        self.selected_slot_waves_len().saturating_sub(1)
+    }
+
+    fn reset_ui_for_game(&mut self) {
+        self.ui.hover_cell = None;
+        self.ui.hover_action = None;
+        self.ui.hover_build_kind = None;
+        self.ui.hover_button = None;
+        self.ui.hover_map_select = None;
+        self.ui.viewport = MapViewport::default();
+        self.ui.manual_pan = false;
+        self.ui.drag_origin = None;
+        self.ui.drag_view = None;
+    }
+
+    fn apply_loaded_checkpoint(&mut self, slot_id: String, checkpoint: save::SaveCheckpoint) {
+        let map_index = match self.maps.iter().position(|m| m.name == checkpoint.map_name) {
+            Some(i) => i,
+            None => {
+                self.load_menu.error = Some(format!("map not found: {}", checkpoint.map_name));
+                return;
+            }
+        };
+
+        let map = self.maps[map_index].clone();
+        self.map_index = map_index;
+
+        let mut towers: Vec<Tower> = checkpoint
+            .towers
+            .into_iter()
+            .map(|t| Tower {
+                x: t.x,
+                y: t.y,
+                kind: match t.kind {
+                    save::TowerKindSave::Basic => TowerKind::Basic,
+                    save::TowerKindSave::Sniper => TowerKind::Sniper,
+                    save::TowerKindSave::Rapid => TowerKind::Rapid,
+                    save::TowerKindSave::Cannon => TowerKind::Cannon,
+                    save::TowerKindSave::Tesla => TowerKind::Tesla,
+                    save::TowerKindSave::Frost => TowerKind::Frost,
+                },
+                level: t.level,
+                cooldown: 0,
+            })
+            .collect();
+
+        if towers.is_empty() {
+            let selected_cell = Self::first_buildable(map.grid_w, map.grid_h, &map.path);
+            towers.push(Tower {
+                x: selected_cell.0,
+                y: selected_cell.1,
+                kind: TowerKind::Basic,
+                level: 1,
+                cooldown: 0,
+            });
+        }
+
+        let selected_cell = towers
+            .first()
+            .map(|t| (t.x, t.y))
+            .or_else(|| Some(Self::first_buildable(map.grid_w, map.grid_h, &map.path)));
+
+        self.dev_mode = checkpoint.dev_mode;
+        self.save_slot = Some(slot_id);
+        self.last_save_error = None;
+
+        self.game = GameState {
+            running: false,
+            speed: checkpoint.speed.clamp(1, 4),
+            money: checkpoint.money,
+            lives: checkpoint.lives,
+            wave: checkpoint.wave.max(1),
+            grid_w: map.grid_w,
+            grid_h: map.grid_h,
+            selected_cell,
+            build_kind: None,
+            map_name: map.name.to_string(),
+            pending_build: None,
+            path: map.path,
+            towers,
+            enemies: vec![],
+            projectiles: vec![],
+            impacts: vec![],
+            particles: vec![],
+            money_cd: 0,
+        };
+
+        self.reset_ui_for_game();
+        self.screen = Screen::Game;
+        self.spawn_wave();
+    }
+
     pub fn on_tick_if_due(&mut self) {
         if self.last_tick.elapsed() >= self.tick_rate {
             self.last_tick = Instant::now();
@@ -343,7 +624,7 @@ impl App {
         self.tick_projectiles();
         self.tick_economy_and_waves();
 
-        if self.game.lives <= 0 {
+        if !self.dev_mode && self.game.lives <= 0 {
             self.game.running = false;
         }
     }
@@ -397,7 +678,9 @@ impl App {
                 e.path_i += 1;
             } else {
                 e.hp = 0;
-                self.game.lives -= 1;
+                if !self.dev_mode {
+                    self.game.lives = self.game.lives.saturating_sub(1);
+                }
             }
         }
     }
@@ -502,17 +785,20 @@ impl App {
     }
 
     fn tick_economy_and_waves(&mut self) {
+        if self.dev_mode {
+            self.game.money_cd = 1;
+        }
         // dinheiro por segundo (não por tick)
         if self.game.money_cd > 0 {
             self.game.money_cd -= 1;
         } else {
             // ganho lento, pra combinar com ritmo mais "tático"
-            self.game.money += 2;
+            self.game.money = self.game.money.saturating_add(2);
             self.game.money_cd = 20; // 20 ticks * 50ms = 1s
         }
 
         let alive = self.game.enemies.iter().any(|e| e.hp > 0);
-        if !alive && self.game.lives > 0 {
+        if !alive && (self.dev_mode || self.game.lives > 0) {
             self.game.wave += 1;
             self.spawn_wave();
         }
@@ -541,6 +827,55 @@ impl App {
         self.game.projectiles.clear();
         self.game.impacts.clear();
         self.game.particles.clear();
+
+        self.autosave_wave();
+    }
+
+    fn autosave_wave(&mut self) {
+        let Some(slot_id) = self.save_slot.clone() else {
+            return;
+        };
+
+        let saved_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let towers = self
+            .game
+            .towers
+            .iter()
+            .map(|t| save::SaveTower {
+                x: t.x,
+                y: t.y,
+                kind: match t.kind {
+                    TowerKind::Basic => save::TowerKindSave::Basic,
+                    TowerKind::Sniper => save::TowerKindSave::Sniper,
+                    TowerKind::Rapid => save::TowerKindSave::Rapid,
+                    TowerKind::Cannon => save::TowerKindSave::Cannon,
+                    TowerKind::Tesla => save::TowerKindSave::Tesla,
+                    TowerKind::Frost => save::TowerKindSave::Frost,
+                },
+                level: t.level,
+            })
+            .collect();
+
+        let checkpoint = save::SaveCheckpoint {
+            version: save::SAVE_VERSION,
+            saved_at,
+            map_name: self.game.map_name.clone(),
+            dev_mode: self.dev_mode,
+            wave: self.game.wave,
+            money: self.game.money,
+            lives: self.game.lives,
+            speed: self.game.speed,
+            towers,
+        };
+
+        match save::write_wave_checkpoint(&slot_id, &checkpoint) {
+            Ok(()) => self.last_save_error = None,
+            Err(e) => self.last_save_error = Some(e.to_string()),
+        }
     }
 
     fn enemy_base_move_cd(&self) -> u16 {
@@ -899,15 +1234,20 @@ impl App {
             money_cd: 0,
         };
 
-        self.ui.hover_cell = None;
-        self.ui.hover_action = None;
-        self.ui.hover_build_kind = None;
-        self.ui.hover_button = None;
-        self.ui.viewport = MapViewport::default();
-        self.ui.manual_pan = false;
-        self.ui.drag_origin = None;
-        self.ui.drag_view = None;
+        self.reset_ui_for_game();
         self.screen = Screen::Game;
+
+        match save::create_new_slot(&self.game.map_name, self.dev_mode) {
+            Ok(id) => {
+                self.save_slot = Some(id);
+                self.last_save_error = None;
+            }
+            Err(e) => {
+                self.save_slot = None;
+                self.last_save_error = Some(e.to_string());
+            }
+        }
+
         self.spawn_wave();
     }
 
@@ -932,15 +1272,17 @@ impl App {
         if self.tower_index_at(x, y).is_some() {
             return false;
         }
-        self.game.money >= Self::tower_cost(kind)
+        self.dev_mode || self.game.money >= Self::tower_cost(kind)
     }
 
     pub fn build_at(&mut self, x: u16, y: u16, kind: TowerKind) -> bool {
         if !self.can_build_at(x, y, kind) {
             return false;
         }
-        let cost = Self::tower_cost(kind);
-        self.game.money -= cost;
+        if !self.dev_mode {
+            let cost = Self::tower_cost(kind);
+            self.game.money -= cost;
+        }
         self.game.towers.push(Tower {
             x,
             y,
@@ -960,7 +1302,7 @@ impl App {
         };
 
         let cost = Self::tower_upgrade_cost(self.game.towers[idx].kind);
-        if self.game.money < cost {
+        if !self.dev_mode && self.game.money < cost {
             return;
         }
         let t = &mut self.game.towers[idx];
@@ -968,7 +1310,9 @@ impl App {
             return;
         }
 
-        self.game.money -= cost;
+        if !self.dev_mode {
+            self.game.money -= cost;
+        }
         t.level += 1;
     }
 
@@ -980,7 +1324,9 @@ impl App {
             return;
         };
         self.game.towers.remove(idx);
-        self.game.money += 20;
+        if !self.dev_mode {
+            self.game.money = self.game.money.saturating_add(20);
+        }
     }
 
     pub fn wave_progress_percent(&self) -> u16 {

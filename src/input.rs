@@ -15,11 +15,34 @@ pub fn pump(app: &mut App) -> Result<()> {
                 return Ok(());
             }
             match app.screen {
-                Screen::MapSelect => match k.code {
+                Screen::MainMenu => match k.code {
                     KeyCode::Esc | KeyCode::Char('q') => app.should_quit = true,
+                    KeyCode::Up | KeyCode::Char('w') => app.main_menu_prev(),
+                    KeyCode::Down | KeyCode::Char('s') => app.main_menu_next(),
+                    KeyCode::Enter | KeyCode::Char(' ') => app.main_menu_activate(),
+                    _ => {}
+                },
+                Screen::MapSelect => match k.code {
+                    KeyCode::Esc => app.enter_main_menu(),
+                    KeyCode::Char('q') => app.should_quit = true,
                     KeyCode::Left | KeyCode::Char('a') => app.select_prev_map(),
                     KeyCode::Right | KeyCode::Char('d') => app.select_next_map(),
                     KeyCode::Enter | KeyCode::Char(' ') => app.start_selected_map(),
+                    _ => {}
+                },
+                Screen::LoadGame => match k.code {
+                    KeyCode::Esc => app.enter_main_menu(),
+                    KeyCode::Char('q') => app.should_quit = true,
+                    KeyCode::Up | KeyCode::Char('w') => app.load_menu_prev(),
+                    KeyCode::Down | KeyCode::Char('s') => app.load_menu_next(),
+                    KeyCode::Left => app.load_menu_focus_left(),
+                    KeyCode::Right => app.load_menu_focus_right(),
+                    KeyCode::Tab => match app.load_menu.focus {
+                        crate::app::LoadMenuFocus::Slots => app.load_menu_focus_right(),
+                        crate::app::LoadMenuFocus::Waves => app.load_menu_focus_left(),
+                    },
+                    KeyCode::Enter => app.load_menu_activate(),
+                    KeyCode::Char('r') => app.refresh_load_menu(),
                     _ => {}
                 },
                 Screen::Game => match k.code {
@@ -29,6 +52,7 @@ pub fn pump(app: &mut App) -> Result<()> {
                     KeyCode::Char('u') => app.handle_button(ButtonId::Upgrade),
                     KeyCode::Char('s') => app.handle_button(ButtonId::Sell),
                     KeyCode::Char('f') => app.handle_button(ButtonId::Speed),
+                    KeyCode::F(12) => app.toggle_dev_mode(),
                     KeyCode::Char('1') => app.toggle_build_kind(TowerKind::Basic),
                     KeyCode::Char('2') => app.toggle_build_kind(TowerKind::Sniper),
                     KeyCode::Char('3') => app.toggle_build_kind(TowerKind::Rapid),
@@ -44,10 +68,22 @@ pub fn pump(app: &mut App) -> Result<()> {
         Event::Resize(_, _) => { /* draw recalcula tudo */ }
         Event::Mouse(m) => match m.kind {
             MouseEventKind::Moved => {
-                app.ui.hover_button = hit_test_button(app, m.column, m.row);
+                app.ui.hover_button = if app.screen == Screen::Game {
+                    hit_test_button(app, m.column, m.row)
+                } else {
+                    None
+                };
                 app.ui.hover_cell = map_cell_at(app, m.column, m.row);
-                app.ui.hover_action = hit_test_action(app, m.column, m.row);
-                app.ui.hover_build_kind = hit_test_build(app, m.column, m.row);
+                app.ui.hover_action = if app.screen == Screen::Game {
+                    hit_test_action(app, m.column, m.row)
+                } else {
+                    None
+                };
+                app.ui.hover_build_kind = if app.screen == Screen::Game {
+                    hit_test_build(app, m.column, m.row)
+                } else {
+                    None
+                };
                 app.ui.hover_map_select = hit_test_map_select(app, m.column, m.row);
             }
             MouseEventKind::Down(MouseButton::Left) => {
@@ -61,38 +97,40 @@ pub fn pump(app: &mut App) -> Result<()> {
                             MapSelectAction::Start => app.start_selected_map(),
                         }
                     }
-                } else if let Some(btn) = hit_test_button(app, m.column, m.row) {
-                    app.handle_button(btn);
-                } else if let Some(act) = hit_test_action(app, m.column, m.row) {
-                    match act {
-                        HoverAction::UpgradePreview => app.handle_button(ButtonId::Upgrade),
-                    }
-                } else if let Some(kind) = hit_test_build(app, m.column, m.row) {
-                    app.toggle_build_kind(kind);
-                } else if let Some(cell) = map_cell_at(app, m.column, m.row) {
-                    if let Some(kind) = app.game.build_kind {
-                        app.game.selected_cell = Some(cell);
-                        if app.can_build_at(cell.0, cell.1, kind) {
-                            if app.game.pending_build == Some(cell) {
-                                if app.build_at(cell.0, cell.1, kind) {
-                                    app.game.build_kind = None;
-                                    app.game.pending_build = None;
+                } else if app.screen == Screen::Game {
+                    if let Some(btn) = hit_test_button(app, m.column, m.row) {
+                        app.handle_button(btn);
+                    } else if let Some(act) = hit_test_action(app, m.column, m.row) {
+                        match act {
+                            HoverAction::UpgradePreview => app.handle_button(ButtonId::Upgrade),
+                        }
+                    } else if let Some(kind) = hit_test_build(app, m.column, m.row) {
+                        app.toggle_build_kind(kind);
+                    } else if let Some(cell) = map_cell_at(app, m.column, m.row) {
+                        if let Some(kind) = app.game.build_kind {
+                            app.game.selected_cell = Some(cell);
+                            if app.can_build_at(cell.0, cell.1, kind) {
+                                if app.game.pending_build == Some(cell) {
+                                    if app.build_at(cell.0, cell.1, kind) {
+                                        app.game.build_kind = None;
+                                        app.game.pending_build = None;
+                                    }
+                                } else {
+                                    app.game.pending_build = Some(cell);
                                 }
                             } else {
-                                app.game.pending_build = Some(cell);
+                                app.game.pending_build = None;
                             }
                         } else {
                             app.game.pending_build = None;
-                        }
-                    } else {
-                        app.game.pending_build = None;
-                        // Toggle apenas para torre: clicar de novo deseleciona (e some o range).
-                        if app.game.selected_cell == Some(cell)
-                            && app.tower_index_at(cell.0, cell.1).is_some()
-                        {
-                            app.game.selected_cell = None;
-                        } else {
-                            app.game.selected_cell = Some(cell);
+                            // Toggle apenas para torre: clicar de novo deseleciona (e some o range).
+                            if app.game.selected_cell == Some(cell)
+                                && app.tower_index_at(cell.0, cell.1).is_some()
+                            {
+                                app.game.selected_cell = None;
+                            } else {
+                                app.game.selected_cell = Some(cell);
+                            }
                         }
                     }
                 }
@@ -124,6 +162,46 @@ pub fn pump(app: &mut App) -> Result<()> {
                 app.ui.drag_origin = None;
                 app.ui.drag_view = None;
             }
+            MouseEventKind::ScrollUp => {
+                if app.screen == Screen::Game && map_cell_at(app, m.column, m.row).is_some() {
+                    app.cycle_zoom(1);
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if app.screen == Screen::Game && map_cell_at(app, m.column, m.row).is_some() {
+                    app.cycle_zoom(-1);
+                }
+            }
+
+            // (Opcional) pan com botão do meio também:
+            MouseEventKind::Down(MouseButton::Middle) => {
+                if app.screen == Screen::Game && map_cell_at(app, m.column, m.row).is_some() {
+                    app.ui.drag_origin = Some((m.column, m.row));
+                    app.ui.drag_view = Some((app.ui.viewport.view_x, app.ui.viewport.view_y));
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Middle) => {
+                if app.screen == Screen::Game {
+                    if let (Some((ox, oy)), Some((vx, vy))) = (app.ui.drag_origin, app.ui.drag_view)
+                    {
+                        let vp = app.ui.viewport;
+                        let dx = (ox as i16 - m.column as i16) / vp.tile_w.max(1) as i16;
+                        let dy = (oy as i16 - m.row as i16) / vp.tile_h.max(1) as i16;
+
+                        let max_x = app.game.grid_w.saturating_sub(vp.vis_w);
+                        let max_y = app.game.grid_h.saturating_sub(vp.vis_h);
+
+                        app.ui.viewport.view_x = (vx as i16 + dx).clamp(0, max_x as i16) as u16;
+                        app.ui.viewport.view_y = (vy as i16 + dy).clamp(0, max_y as i16) as u16;
+                        app.ui.manual_pan = true;
+                    }
+                }
+            }
+            MouseEventKind::Up(MouseButton::Middle) => {
+                app.ui.drag_origin = None;
+                app.ui.drag_view = None;
+            }
+
             _ => {}
         },
         _ => {}
