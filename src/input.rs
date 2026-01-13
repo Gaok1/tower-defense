@@ -65,13 +65,20 @@ pub fn pump(app: &mut App) -> Result<()> {
                 } else if let Some(kind) = hit_test_build(app, m.column, m.row) {
                     app.toggle_build_kind(kind);
                 } else if let Some(cell) = map_cell_at(app, m.column, m.row) {
-                    // Toggle apenas para torre: clicar de novo deseleciona (e some o range).
-                    if app.game.selected_cell == Some(cell)
-                        && app.tower_index_at(cell.0, cell.1).is_some()
-                    {
-                        app.game.selected_cell = None;
+                    if let Some(kind) = app.game.build_kind {
+                        if app.build_at(cell.0, cell.1, kind) {
+                            app.game.build_kind = None;
+                            app.game.selected_cell = Some(cell);
+                        }
                     } else {
-                        app.game.selected_cell = Some(cell);
+                        // Toggle apenas para torre: clicar de novo deseleciona (e some o range).
+                        if app.game.selected_cell == Some(cell)
+                            && app.tower_index_at(cell.0, cell.1).is_some()
+                        {
+                            app.game.selected_cell = None;
+                        } else {
+                            app.game.selected_cell = Some(cell);
+                        }
                     }
                 }
             }
