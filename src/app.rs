@@ -163,7 +163,12 @@ pub struct Projectile {
 
 #[derive(Debug, Clone, Copy)]
 pub enum ParticleKind {
-    Trail,
+    TrailBasic,
+    TrailSniper,
+    TrailRapid,
+    TrailCannon,
+    TrailTesla,
+    TrailFrost,
     Spark,
     Smoke,
     Arc,
@@ -171,6 +176,12 @@ pub enum ParticleKind {
     Bolt,
     Frost,
     Wave,
+    Pulse,
+    Needle,
+    Spray,
+    Ember,
+    Static,
+    Flake,
 }
 
 #[derive(Debug, Clone)]
@@ -721,7 +732,7 @@ impl App {
 
     fn tick_projectiles(&mut self) {
         let sp = self.game.speed.max(1) as u16;
-        let mut trails: Vec<(i16, i16)> = Vec::new();
+        let mut trails: Vec<(i16, i16, TowerKind)> = Vec::new();
         let mut impacts: Vec<(u16, u16, TowerKind, u8)> = Vec::new();
 
         for p in &mut self.game.projectiles {
@@ -748,7 +759,7 @@ impl App {
             p.y += dy;
 
             // trail
-            trails.push((old_x, old_y));
+            trails.push((old_x, old_y, p.kind));
 
             if p.x == p.tx && p.y == p.ty {
                 let hit_x = p.x.max(0) as u16;
@@ -788,8 +799,8 @@ impl App {
 
         self.game.projectiles.retain(|p| p.ttl > 0);
 
-        for (x, y) in trails {
-            self.spawn_trail(x, y);
+        for (x, y, kind) in trails {
+            self.spawn_trail(x, y, kind);
         }
         for (x, y, kind, level) in impacts {
             self.spawn_impact(x, y, kind, level);
@@ -941,11 +952,25 @@ impl App {
         // pequeno flash de "muzzle" na torre
         self.spawn_spark(from_x as i16, from_y as i16);
         match kind {
+            TowerKind::Basic => {
+                if level >= 3 {
+                    self.spawn_pulse(from_x as i16, from_y as i16);
+                } else {
+                    self.spawn_spray(from_x as i16, from_y as i16, 2);
+                }
+            }
+            TowerKind::Sniper => {
+                self.spawn_needle(from_x as i16, from_y as i16);
+            }
+            TowerKind::Rapid => {
+                self.spawn_spray(from_x as i16, from_y as i16, 4);
+            }
             TowerKind::Tesla => {
                 let count = 1 + (level / 2).max(1);
                 for _ in 0..count {
                     self.spawn_arc(from_x as i16, from_y as i16);
                 }
+                self.spawn_static(from_x as i16, from_y as i16, 2 + level as usize / 2);
             }
             TowerKind::Cannon => {
                 for _ in 0..2 {
@@ -954,25 +979,34 @@ impl App {
                 for _ in 0..(1 + level / 2) {
                     self.spawn_wave(from_x as i16, from_y as i16);
                 }
+                self.spawn_ember(from_x as i16, from_y as i16, 2 + level as usize / 2);
             }
             TowerKind::Frost => {
                 for _ in 0..(2 + level / 3) {
                     self.spawn_shard(from_x as i16, from_y as i16);
                 }
                 self.spawn_frost(from_x as i16, from_y as i16);
+                self.spawn_flake(from_x as i16, from_y as i16, 2 + level as usize / 3);
             }
-            _ => {}
         }
     }
 
-    fn spawn_trail(&mut self, x: i16, y: i16) {
+    fn spawn_trail(&mut self, x: i16, y: i16, kind: TowerKind) {
+        let trail_kind = match kind {
+            TowerKind::Basic => ParticleKind::TrailBasic,
+            TowerKind::Sniper => ParticleKind::TrailSniper,
+            TowerKind::Rapid => ParticleKind::TrailRapid,
+            TowerKind::Cannon => ParticleKind::TrailCannon,
+            TowerKind::Tesla => ParticleKind::TrailTesla,
+            TowerKind::Frost => ParticleKind::TrailFrost,
+        };
         self.game.particles.push(Particle {
             x,
             y,
             vx: 0,
             vy: 0,
             ttl: 4,
-            kind: ParticleKind::Trail,
+            kind: trail_kind,
         });
     }
 
@@ -992,50 +1026,172 @@ impl App {
         }
     }
 
+    fn spawn_pulse(&mut self, x: i16, y: i16) {
+        let dirs = [(2, 0), (-2, 0), (0, 2), (0, -2), (1, 1), (-1, 1), (1, -1), (-1, -1)];
+        for (vx, vy) in dirs {
+            self.game.particles.push(Particle {
+                x,
+                y,
+                vx,
+                vy,
+                ttl: 6,
+                kind: ParticleKind::Pulse,
+            });
+        }
+    }
+
+    fn spawn_needle(&mut self, x: i16, y: i16) {
+        let dirs = [(3, 0), (-3, 0), (0, 3), (0, -3)];
+        for (vx, vy) in dirs {
+            self.game.particles.push(Particle {
+                x,
+                y,
+                vx,
+                vy,
+                ttl: 5,
+                kind: ParticleKind::Needle,
+            });
+        }
+    }
+
+    fn spawn_spray(&mut self, x: i16, y: i16, count: usize) {
+        for _ in 0..count {
+            let vx = self.rand_i8(-2, 2);
+            let vy = self.rand_i8(-1, 1);
+            self.game.particles.push(Particle {
+                x,
+                y,
+                vx,
+                vy,
+                ttl: 4,
+                kind: ParticleKind::Spray,
+            });
+        }
+    }
+
+    fn spawn_ember(&mut self, x: i16, y: i16, count: usize) {
+        for _ in 0..count {
+            let vx = self.rand_i8(-1, 1);
+            let vy = self.rand_i8(0, 2);
+            self.game.particles.push(Particle {
+                x,
+                y,
+                vx,
+                vy,
+                ttl: 6,
+                kind: ParticleKind::Ember,
+            });
+        }
+    }
+
+    fn spawn_static(&mut self, x: i16, y: i16, count: usize) {
+        for _ in 0..count {
+            let vx = self.rand_i8(-1, 1);
+            let vy = self.rand_i8(-1, 1);
+            self.game.particles.push(Particle {
+                x,
+                y,
+                vx,
+                vy,
+                ttl: 4,
+                kind: ParticleKind::Static,
+            });
+        }
+    }
+
+    fn spawn_flake(&mut self, x: i16, y: i16, count: usize) {
+        for _ in 0..count {
+            let vx = self.rand_i8(-1, 1);
+            let vy = self.rand_i8(-2, 1);
+            self.game.particles.push(Particle {
+                x,
+                y,
+                vx,
+                vy,
+                ttl: 5,
+                kind: ParticleKind::Flake,
+            });
+        }
+    }
+
     fn spawn_impact(&mut self, x: u16, y: u16, kind: TowerKind, level: u8) {
         self.game.impacts.push(ImpactFx { x, y, ttl: 4, kind });
 
         let ix = x as i16;
         let iy = y as i16;
 
-        // fagulhas
-        for _ in 0..(6 + level as usize) {
-            let vx = self.rand_i8(-2, 2);
-            let vy = self.rand_i8(-2, 2);
-            self.game.particles.push(Particle {
-                x: ix,
-                y: iy,
-                vx,
-                vy,
-                ttl: 6,
-                kind: ParticleKind::Spark,
-            });
-        }
-
-        // "fumacinha" no ponto de impacto
-        self.spawn_smoke(ix, iy);
-        if kind == TowerKind::Tesla {
-            for _ in 0..(4 + level / 2) {
-                self.spawn_arc(ix, iy);
+        match kind {
+            TowerKind::Basic => {
+                for _ in 0..(4 + level as usize) {
+                    let vx = self.rand_i8(-2, 2);
+                    let vy = self.rand_i8(-2, 2);
+                    self.game.particles.push(Particle {
+                        x: ix,
+                        y: iy,
+                        vx,
+                        vy,
+                        ttl: 5,
+                        kind: ParticleKind::Spark,
+                    });
+                }
+                self.spawn_pulse(ix, iy);
             }
-            for _ in 0..(2 + level / 3) {
-                self.spawn_bolt(ix, iy);
+            TowerKind::Sniper => {
+                self.spawn_needle(ix, iy);
+                for _ in 0..(2 + level as usize / 2) {
+                    let vx = self.rand_i8(-1, 1);
+                    let vy = self.rand_i8(-1, 1);
+                    self.game.particles.push(Particle {
+                        x: ix,
+                        y: iy,
+                        vx,
+                        vy,
+                        ttl: 4,
+                        kind: ParticleKind::Needle,
+                    });
+                }
             }
-        }
-        if kind == TowerKind::Frost {
-            for _ in 0..(4 + level / 2) {
-                self.spawn_shard(ix, iy);
+            TowerKind::Rapid => {
+                self.spawn_spray(ix, iy, 5 + level as usize / 2);
+                for _ in 0..(3 + level as usize / 2) {
+                    let vx = self.rand_i8(-2, 2);
+                    let vy = self.rand_i8(-1, 1);
+                    self.game.particles.push(Particle {
+                        x: ix,
+                        y: iy,
+                        vx,
+                        vy,
+                        ttl: 4,
+                        kind: ParticleKind::Spark,
+                    });
+                }
             }
-            for _ in 0..(2 + level / 3) {
-                self.spawn_frost(ix, iy);
+            TowerKind::Cannon => {
+                for _ in 0..(2 + level / 2) {
+                    self.spawn_smoke(ix, iy);
+                }
+                for _ in 0..(2 + level / 3) {
+                    self.spawn_wave(ix, iy);
+                }
+                self.spawn_ember(ix, iy, 3 + level as usize / 2);
             }
-        }
-        if kind == TowerKind::Cannon {
-            for _ in 0..(2 + level / 2) {
-                self.spawn_smoke(ix, iy);
+            TowerKind::Tesla => {
+                for _ in 0..(4 + level / 2) {
+                    self.spawn_arc(ix, iy);
+                }
+                for _ in 0..(2 + level / 3) {
+                    self.spawn_bolt(ix, iy);
+                }
+                self.spawn_static(ix, iy, 4 + level as usize / 2);
             }
-            for _ in 0..(2 + level / 3) {
-                self.spawn_wave(ix, iy);
+            TowerKind::Frost => {
+                for _ in 0..(4 + level / 2) {
+                    self.spawn_shard(ix, iy);
+                }
+                for _ in 0..(2 + level / 3) {
+                    self.spawn_frost(ix, iy);
+                }
+                self.spawn_flake(ix, iy, 3 + level as usize / 2);
             }
         }
     }

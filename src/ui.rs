@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     prelude::*,
@@ -8,7 +10,7 @@ use ratatui::{
 use crate::{
     app::{
         App, ButtonId, HoverAction, LayoutMode, LoadMenuFocus, MapSelectAction, MapSpec,
-        MapViewport, ParticleKind, Screen, TOWER_KIND_COUNT, TowerKind,
+        MapViewport, ParticleKind, Projectile, Screen, TOWER_KIND_COUNT, TowerKind,
     },
     assets,
 };
@@ -1070,7 +1072,8 @@ impl<'a> Widget for MapWidget<'a> {
             }
         }
 
-        // projéteis (agora no “meio” do tile em X e Y)
+        // projéteis (distribuídos dentro do tile p/ acumulação visível)
+        let mut projectile_cells: HashMap<(u16, u16), Vec<&Projectile>> = HashMap::new();
         for p in &app.game.projectiles {
             if p.x < 0 || p.y < 0 {
                 continue;
@@ -1085,26 +1088,79 @@ impl<'a> Widget for MapWidget<'a> {
             if gx >= vp.vis_w || gy >= vp.vis_h {
                 continue;
             }
+            projectile_cells.entry((cx, cy)).or_default().push(p);
+        }
 
+        for ((cx, cy), projectiles) in projectile_cells {
+            let gx = cx - vp.view_x;
+            let gy = cy - vp.view_y;
             let tile_x = area.x + gx * vp.tile_w;
             let tile_y = area.y + gy * vp.tile_h;
 
-            let mid_x = tile_x + (vp.tile_w / 2).min(vp.tile_w.saturating_sub(1));
-            let mid_y = tile_y + (vp.tile_h / 2).min(vp.tile_h.saturating_sub(1));
+            let mid_dx = (vp.tile_w / 2).min(vp.tile_w.saturating_sub(1));
+            let mid_dy = (vp.tile_h / 2).min(vp.tile_h.saturating_sub(1));
 
-            let (sym, color) = match p.kind {
-                TowerKind::Basic => (assets::GLYPH_PROJECTILE_BASIC, Color::LightMagenta),
-                TowerKind::Sniper => (assets::GLYPH_PROJECTILE_SNIPER, Color::LightCyan),
-                TowerKind::Rapid => (assets::GLYPH_PROJECTILE_RAPID, Color::Yellow),
-                TowerKind::Cannon => (assets::GLYPH_PROJECTILE_CANNON, Color::LightRed),
-                TowerKind::Tesla => (assets::GLYPH_PROJECTILE_TESLA, Color::LightBlue),
-                TowerKind::Frost => (assets::GLYPH_PROJECTILE_FROST, Color::LightBlue),
+            let mut offsets: Vec<(u16, u16)> = Vec::new();
+            let mut push_offset = |dx: u16, dy: u16| {
+                if !offsets.iter().any(|&(ox, oy)| ox == dx && oy == dy) {
+                    offsets.push((dx, dy));
+                }
             };
 
-            if mid_x < area.right() && mid_y < area.bottom() {
-                if let Some(cell) = buf.cell_mut((mid_x, mid_y)) {
-                    let style = cell.style().fg(color).add_modifier(Modifier::BOLD);
-                    cell.set_symbol(sym).set_style(style);
+            push_offset(mid_dx, mid_dy);
+            if vp.tile_w > 1 {
+                push_offset(0, mid_dy);
+                push_offset(vp.tile_w.saturating_sub(1), mid_dy);
+            }
+            if vp.tile_h > 1 {
+                push_offset(mid_dx, 0);
+                push_offset(mid_dx, vp.tile_h.saturating_sub(1));
+            }
+            if vp.tile_w > 1 && vp.tile_h > 1 {
+                push_offset(0, 0);
+                push_offset(vp.tile_w.saturating_sub(1), 0);
+                push_offset(0, vp.tile_h.saturating_sub(1));
+                push_offset(
+                    vp.tile_w.saturating_sub(1),
+                    vp.tile_h.saturating_sub(1),
+                );
+            }
+
+            let mut slots = offsets.len().max(1);
+            let mut show_stack = false;
+            if projectiles.len() > offsets.len() && offsets.len() > 1 {
+                show_stack = true;
+                slots = offsets.len().saturating_sub(1).max(1);
+            }
+
+            for (idx, p) in projectiles.iter().take(slots).enumerate() {
+                let (sym, color) = projectile_visual(p.kind);
+                let (dx, dy) = offsets.get(idx).copied().unwrap_or((mid_dx, mid_dy));
+                let x = tile_x + dx;
+                let y = tile_y + dy;
+                if x < area.right() && y < area.bottom() {
+                    if let Some(cell) = buf.cell_mut((x, y)) {
+                        let style = cell.style().fg(color).add_modifier(Modifier::BOLD);
+                        cell.set_symbol(sym).set_style(style);
+                    }
+                }
+            }
+
+            if show_stack {
+                let stack_kind = projectiles
+                    .first()
+                    .map(|p| p.kind)
+                    .unwrap_or(TowerKind::Basic);
+                let (_, color) = projectile_visual(stack_kind);
+                let (dx, dy) = offsets.last().copied().unwrap_or((mid_dx, mid_dy));
+                let x = tile_x + dx;
+                let y = tile_y + dy;
+                if x < area.right() && y < area.bottom() {
+                    if let Some(cell) = buf.cell_mut((x, y)) {
+                        let style = cell.style().fg(color).add_modifier(Modifier::BOLD);
+                        cell.set_symbol(assets::GLYPH_PROJECTILE_STACK)
+                            .set_style(style);
+                    }
                 }
             }
         }
@@ -1579,7 +1635,12 @@ fn particle_visual(kind: ParticleKind, ttl: u8) -> (&'static str, Color, Modifie
     let idx = 4 - t; // ttl 4 -> idx0 (forte), ttl 1 -> idx3 (fraco)
 
     match kind {
-        ParticleKind::Trail => (assets::TRAIL[idx], Color::LightMagenta, Modifier::empty()),
+        ParticleKind::TrailBasic => (assets::TRAIL_BASIC[idx], Color::LightMagenta, Modifier::DIM),
+        ParticleKind::TrailSniper => (assets::TRAIL_SNIPER[idx], Color::LightCyan, Modifier::DIM),
+        ParticleKind::TrailRapid => (assets::TRAIL_RAPID[idx], Color::Yellow, Modifier::BOLD),
+        ParticleKind::TrailCannon => (assets::TRAIL_CANNON[idx], Color::LightRed, Modifier::empty()),
+        ParticleKind::TrailTesla => (assets::TRAIL_TESLA[idx], Color::LightBlue, Modifier::BOLD),
+        ParticleKind::TrailFrost => (assets::TRAIL_FROST[idx], Color::Cyan, Modifier::empty()),
         ParticleKind::Spark => (
             assets::SPARK[idx],
             if ttl >= 3 { warn() } else { Color::Yellow },
@@ -1591,6 +1652,23 @@ fn particle_visual(kind: ParticleKind, ttl: u8) -> (&'static str, Color, Modifie
         ParticleKind::Bolt => (assets::BOLT[idx], Color::LightBlue, Modifier::BOLD),
         ParticleKind::Frost => (assets::FROST[idx], Color::Cyan, Modifier::empty()),
         ParticleKind::Wave => (assets::WAVE[idx], Color::LightRed, Modifier::BOLD),
+        ParticleKind::Pulse => (assets::PULSE[idx], Color::LightMagenta, Modifier::BOLD),
+        ParticleKind::Needle => (assets::NEEDLE[idx], Color::LightCyan, Modifier::BOLD),
+        ParticleKind::Spray => (assets::SPRAY[idx], Color::Yellow, Modifier::BOLD),
+        ParticleKind::Ember => (assets::EMBER[idx], Color::LightRed, Modifier::empty()),
+        ParticleKind::Static => (assets::STATIC[idx], Color::LightBlue, Modifier::BOLD),
+        ParticleKind::Flake => (assets::FLAKE[idx], Color::Cyan, Modifier::empty()),
+    }
+}
+
+fn projectile_visual(kind: TowerKind) -> (&'static str, Color) {
+    match kind {
+        TowerKind::Basic => (assets::GLYPH_PROJECTILE_BASIC, Color::LightMagenta),
+        TowerKind::Sniper => (assets::GLYPH_PROJECTILE_SNIPER, Color::LightCyan),
+        TowerKind::Rapid => (assets::GLYPH_PROJECTILE_RAPID, Color::Yellow),
+        TowerKind::Cannon => (assets::GLYPH_PROJECTILE_CANNON, Color::LightRed),
+        TowerKind::Tesla => (assets::GLYPH_PROJECTILE_TESLA, Color::LightBlue),
+        TowerKind::Frost => (assets::GLYPH_PROJECTILE_FROST, Color::LightBlue),
     }
 }
 
