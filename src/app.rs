@@ -168,6 +168,9 @@ pub enum ParticleKind {
     Smoke,
     Arc,
     Shard,
+    Bolt,
+    Frost,
+    Wave,
 }
 
 #[derive(Debug, Clone)]
@@ -719,7 +722,7 @@ impl App {
     fn tick_projectiles(&mut self) {
         let sp = self.game.speed.max(1) as u16;
         let mut trails: Vec<(i16, i16)> = Vec::new();
-        let mut impacts: Vec<(u16, u16, TowerKind)> = Vec::new();
+        let mut impacts: Vec<(u16, u16, TowerKind, u8)> = Vec::new();
 
         for p in &mut self.game.projectiles {
             if p.ttl > 0 {
@@ -768,8 +771,17 @@ impl App {
                         e.slow_ticks = e.slow_ticks.max(slow_ticks);
                     }
                 }
+                if p.kind == TowerKind::Tesla {
+                    self.apply_tesla_chain(hit_x, hit_y, p.damage, p.source_level);
+                }
+                if p.kind == TowerKind::Cannon {
+                    self.apply_cannon_splash(hit_x, hit_y, p.damage, p.source_level);
+                }
+                if p.kind == TowerKind::Frost {
+                    self.apply_frost_burst(hit_x, hit_y, p.source_level);
+                }
 
-                impacts.push((hit_x, hit_y, p.kind));
+                impacts.push((hit_x, hit_y, p.kind, p.source_level));
                 p.ttl = 0;
             }
         }
@@ -779,8 +791,8 @@ impl App {
         for (x, y) in trails {
             self.spawn_trail(x, y);
         }
-        for (x, y, kind) in impacts {
-            self.spawn_impact(x, y, kind);
+        for (x, y, kind, level) in impacts {
+            self.spawn_impact(x, y, kind, level);
         }
     }
 
@@ -929,9 +941,26 @@ impl App {
         // pequeno flash de "muzzle" na torre
         self.spawn_spark(from_x as i16, from_y as i16);
         match kind {
-            TowerKind::Tesla => self.spawn_arc(from_x as i16, from_y as i16),
-            TowerKind::Cannon => self.spawn_smoke(from_x as i16, from_y as i16),
-            TowerKind::Frost => self.spawn_shard(from_x as i16, from_y as i16),
+            TowerKind::Tesla => {
+                let count = 1 + (level / 2).max(1);
+                for _ in 0..count {
+                    self.spawn_arc(from_x as i16, from_y as i16);
+                }
+            }
+            TowerKind::Cannon => {
+                for _ in 0..2 {
+                    self.spawn_smoke(from_x as i16, from_y as i16);
+                }
+                for _ in 0..(1 + level / 2) {
+                    self.spawn_wave(from_x as i16, from_y as i16);
+                }
+            }
+            TowerKind::Frost => {
+                for _ in 0..(2 + level / 3) {
+                    self.spawn_shard(from_x as i16, from_y as i16);
+                }
+                self.spawn_frost(from_x as i16, from_y as i16);
+            }
             _ => {}
         }
     }
@@ -963,14 +992,14 @@ impl App {
         }
     }
 
-    fn spawn_impact(&mut self, x: u16, y: u16, kind: TowerKind) {
+    fn spawn_impact(&mut self, x: u16, y: u16, kind: TowerKind, level: u8) {
         self.game.impacts.push(ImpactFx { x, y, ttl: 4, kind });
 
         let ix = x as i16;
         let iy = y as i16;
 
         // fagulhas
-        for _ in 0..8 {
+        for _ in 0..(6 + level as usize) {
             let vx = self.rand_i8(-2, 2);
             let vy = self.rand_i8(-2, 2);
             self.game.particles.push(Particle {
@@ -986,18 +1015,27 @@ impl App {
         // "fumacinha" no ponto de impacto
         self.spawn_smoke(ix, iy);
         if kind == TowerKind::Tesla {
-            for _ in 0..4 {
+            for _ in 0..(4 + level / 2) {
                 self.spawn_arc(ix, iy);
+            }
+            for _ in 0..(2 + level / 3) {
+                self.spawn_bolt(ix, iy);
             }
         }
         if kind == TowerKind::Frost {
-            for _ in 0..4 {
+            for _ in 0..(4 + level / 2) {
                 self.spawn_shard(ix, iy);
+            }
+            for _ in 0..(2 + level / 3) {
+                self.spawn_frost(ix, iy);
             }
         }
         if kind == TowerKind::Cannon {
-            for _ in 0..2 {
+            for _ in 0..(2 + level / 2) {
                 self.spawn_smoke(ix, iy);
+            }
+            for _ in 0..(2 + level / 3) {
+                self.spawn_wave(ix, iy);
             }
         }
     }
@@ -1028,6 +1066,39 @@ impl App {
         });
     }
 
+    fn spawn_bolt(&mut self, x: i16, y: i16) {
+        self.game.particles.push(Particle {
+            x,
+            y,
+            vx: 0,
+            vy: 0,
+            ttl: 4,
+            kind: ParticleKind::Bolt,
+        });
+    }
+
+    fn spawn_frost(&mut self, x: i16, y: i16) {
+        self.game.particles.push(Particle {
+            x,
+            y,
+            vx: 0,
+            vy: 0,
+            ttl: 5,
+            kind: ParticleKind::Frost,
+        });
+    }
+
+    fn spawn_wave(&mut self, x: i16, y: i16) {
+        self.game.particles.push(Particle {
+            x,
+            y,
+            vx: 0,
+            vy: 0,
+            ttl: 4,
+            kind: ParticleKind::Wave,
+        });
+    }
+
     fn spawn_smoke(&mut self, x: i16, y: i16) {
         self.game.particles.push(Particle {
             x,
@@ -1037,6 +1108,99 @@ impl App {
             ttl: 10,
             kind: ParticleKind::Smoke,
         });
+    }
+
+    fn spawn_bolt_line(&mut self, from_x: i16, from_y: i16, to_x: i16, to_y: i16) {
+        let dx = to_x - from_x;
+        let dy = to_y - from_y;
+        let steps = dx.abs().max(dy.abs());
+        if steps == 0 {
+            return;
+        }
+        let step_x = dx.signum();
+        let step_y = dy.signum();
+        let mut cx = from_x;
+        let mut cy = from_y;
+        for _ in 0..steps {
+            cx += step_x;
+            cy += step_y;
+            self.spawn_bolt(cx, cy);
+        }
+    }
+
+    fn apply_tesla_chain(&mut self, x: u16, y: u16, damage: i32, level: u8) {
+        let (radius, max_targets, percent) = Self::tesla_chain_params(level);
+        let mut candidates: Vec<(usize, u16, u16, u16)> = Vec::new();
+        for (idx, e) in self.game.enemies.iter().enumerate() {
+            if e.hp <= 0 {
+                continue;
+            }
+            let (ex, ey) = self.game.path[e.path_i];
+            let dist = manhattan(x, y, ex, ey);
+            if dist == 0 || dist > radius {
+                continue;
+            }
+            candidates.push((idx, ex, ey, dist));
+        }
+        candidates.sort_by_key(|&(_, _, _, dist)| dist);
+
+        for (idx, ex, ey, dist) in candidates.into_iter().take(max_targets) {
+            let falloff = 1.0 - ((dist - 1) as f32 * 0.18).clamp(0.0, 0.6);
+            let chain_damage =
+                ((damage as f32) * (percent as f32 / 100.0) * falloff).round() as i32;
+            if chain_damage <= 0 {
+                continue;
+            }
+            if let Some(e) = self.game.enemies.get_mut(idx) {
+                e.hp -= chain_damage;
+                if e.hp < 0 {
+                    e.hp = 0;
+                }
+            }
+            self.spawn_bolt_line(x as i16, y as i16, ex as i16, ey as i16);
+            self.spawn_arc(ex as i16, ey as i16);
+        }
+    }
+
+    fn apply_cannon_splash(&mut self, x: u16, y: u16, damage: i32, level: u8) {
+        let (radius, percent) = Self::cannon_splash_params(level);
+        for e in &mut self.game.enemies {
+            if e.hp <= 0 {
+                continue;
+            }
+            let (ex, ey) = self.game.path[e.path_i];
+            let dist = manhattan(x, y, ex, ey);
+            if dist == 0 || dist > radius {
+                continue;
+            }
+            let splash_damage = ((damage as f32) * (percent as f32 / 100.0)).round() as i32;
+            if splash_damage <= 0 {
+                continue;
+            }
+            e.hp -= splash_damage;
+            if e.hp < 0 {
+                e.hp = 0;
+            }
+            self.spawn_wave(ex as i16, ey as i16);
+            self.spawn_smoke(ex as i16, ey as i16);
+        }
+    }
+
+    fn apply_frost_burst(&mut self, x: u16, y: u16, level: u8) {
+        let (radius, slow_percent, slow_ticks) = Self::frost_burst_params(level);
+        for e in &mut self.game.enemies {
+            if e.hp <= 0 {
+                continue;
+            }
+            let (ex, ey) = self.game.path[e.path_i];
+            let dist = manhattan(x, y, ex, ey);
+            if dist == 0 || dist > radius {
+                continue;
+            }
+            e.slow_percent = e.slow_percent.max(slow_percent);
+            e.slow_ticks = e.slow_ticks.max(slow_ticks);
+            self.spawn_frost(ex as i16, ey as i16);
+        }
     }
 
     fn rand_u32(&mut self) -> u32 {
@@ -1489,6 +1653,33 @@ impl App {
         let slow_percent = (20 + lvl * 3).min(60) as u8;
         let slow_ticks = 8 + lvl * 2;
         (slow_percent, slow_ticks)
+    }
+
+    pub fn frost_burst_params(level: u8) -> (u16, u8, u16) {
+        let (slow_percent, slow_ticks) = Self::frost_slow(level);
+        let radius = if level >= 4 { 2 } else { 1 };
+        (radius, (slow_percent / 2).max(10), (slow_ticks / 2).max(12))
+    }
+
+    pub fn tesla_chain_params(level: u8) -> (u16, usize, u8) {
+        let l = level.max(1);
+        let radius = if l >= 6 {
+            3
+        } else if l >= 3 {
+            2
+        } else {
+            1
+        };
+        let max_targets = (1 + l / 2).max(2) as usize;
+        let percent = (35 + l * 4).min(70);
+        (radius, max_targets, percent)
+    }
+
+    pub fn cannon_splash_params(level: u8) -> (u16, u8) {
+        let l = level.max(1);
+        let radius = if l >= 5 { 2 } else { 1 };
+        let percent = (30 + l * 3).min(55);
+        (radius, percent)
     }
 
     fn build_maps() -> Vec<MapSpec> {

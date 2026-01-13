@@ -1103,8 +1103,8 @@ impl<'a> Widget for MapWidget<'a> {
 
             if mid_x < area.right() && mid_y < area.bottom() {
                 if let Some(cell) = buf.cell_mut((mid_x, mid_y)) {
-                    cell.set_symbol(sym)
-                        .set_style(Style::default().fg(color).add_modifier(Modifier::BOLD));
+                    let style = cell.style().fg(color).add_modifier(Modifier::BOLD);
+                    cell.set_symbol(sym).set_style(style);
                 }
             }
         }
@@ -1131,12 +1131,12 @@ impl<'a> Widget for MapWidget<'a> {
             let mid_x = tile_x + (vp.tile_w / 2).min(vp.tile_w.saturating_sub(1));
             let mid_y = tile_y + (vp.tile_h / 2).min(vp.tile_h.saturating_sub(1));
 
-            let (sym, st) = particle_visual(p.kind, p.ttl);
+            let (sym, color, modifier) = particle_visual(p.kind, p.ttl);
 
             if mid_x < area.right() && mid_y < area.bottom() {
                 if let Some(cell) = buf.cell_mut((mid_x, mid_y)) {
-                    cell.set_symbol(sym)
-                        .set_style(st.add_modifier(Modifier::BOLD));
+                    let style = cell.style().fg(color).add_modifier(modifier);
+                    cell.set_symbol(sym).set_style(style);
                 }
             }
         }
@@ -1574,34 +1574,23 @@ impl<'a> Widget for MapPreviewWidget<'a> {
     }
 }
 
-fn particle_visual(kind: ParticleKind, ttl: u8) -> (&'static str, Style) {
+fn particle_visual(kind: ParticleKind, ttl: u8) -> (&'static str, Color, Modifier) {
     let t = ttl.max(1).min(4) as usize;
     let idx = 4 - t; // ttl 4 -> idx0 (forte), ttl 1 -> idx3 (fraco)
 
     match kind {
-        ParticleKind::Trail => (
-            assets::TRAIL[idx],
-            Style::default().fg(Color::LightMagenta).bg(bg()),
-        ),
+        ParticleKind::Trail => (assets::TRAIL[idx], Color::LightMagenta, Modifier::empty()),
         ParticleKind::Spark => (
             assets::SPARK[idx],
-            Style::default()
-                .fg(if ttl >= 3 { warn() } else { Color::Yellow })
-                .bg(bg())
-                .add_modifier(Modifier::BOLD),
+            if ttl >= 3 { warn() } else { Color::Yellow },
+            Modifier::BOLD,
         ),
-        ParticleKind::Smoke => (assets::SMOKE[idx], Style::default().fg(text_dim()).bg(bg())),
-        ParticleKind::Arc => (
-            assets::ARC[idx],
-            Style::default()
-                .fg(Color::LightBlue)
-                .bg(bg())
-                .add_modifier(Modifier::BOLD),
-        ),
-        ParticleKind::Shard => (
-            assets::SHARD[idx],
-            Style::default().fg(Color::LightBlue).bg(bg()),
-        ),
+        ParticleKind::Smoke => (assets::SMOKE[idx], text_dim(), Modifier::empty()),
+        ParticleKind::Arc => (assets::ARC[idx], Color::LightBlue, Modifier::BOLD),
+        ParticleKind::Shard => (assets::SHARD[idx], Color::LightBlue, Modifier::empty()),
+        ParticleKind::Bolt => (assets::BOLT[idx], Color::LightBlue, Modifier::BOLD),
+        ParticleKind::Frost => (assets::FROST[idx], Color::Cyan, Modifier::empty()),
+        ParticleKind::Wave => (assets::WAVE[idx], Color::LightRed, Modifier::BOLD),
     }
 }
 
@@ -1701,14 +1690,51 @@ fn tower_effect_labels(
     upgrade_hover: bool,
 ) -> (String, Color, Option<String>) {
     match kind {
+        TowerKind::Tesla => {
+            let (radius, targets, percent) = App::tesla_chain_params(level);
+            let label = format!("Chain {percent}% r{radius} x{targets}");
+            let next = if upgrade_hover {
+                let next_level = (level + 1).min(9);
+                if next_level > level {
+                    let (nr, nt, np) = App::tesla_chain_params(next_level);
+                    Some(format!("Chain {np}% r{nr} x{nt}"))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            (label, Color::LightBlue, next)
+        }
+        TowerKind::Cannon => {
+            let (radius, percent) = App::cannon_splash_params(level);
+            let label = format!("Splash {percent}% r{radius}");
+            let next = if upgrade_hover {
+                let next_level = (level + 1).min(9);
+                if next_level > level {
+                    let (nr, np) = App::cannon_splash_params(next_level);
+                    Some(format!("Splash {np}% r{nr}"))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            (label, Color::LightRed, next)
+        }
         TowerKind::Frost => {
             let (slow_percent, slow_ticks) = App::frost_slow(level);
-            let label = format!("Slow {slow_percent}% / {slow_ticks}t");
+            let (burst_radius, burst_slow, _burst_ticks) = App::frost_burst_params(level);
+            let label =
+                format!("Slow {slow_percent}%/{slow_ticks}t + Chill {burst_slow}% r{burst_radius}");
             let next = if upgrade_hover {
                 let next_level = (level + 1).min(9);
                 if next_level > level {
                     let (next_percent, next_ticks) = App::frost_slow(next_level);
-                    Some(format!("Slow {next_percent}% / {next_ticks}t"))
+                    let (nr, nb, nt) = App::frost_burst_params(next_level);
+                    Some(format!(
+                        "Slow {next_percent}%/{next_ticks}t + Chill {nb}% r{nr}"
+                    ))
                 } else {
                     None
                 }
