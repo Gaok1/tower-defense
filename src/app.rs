@@ -813,16 +813,27 @@ impl App {
         let Some((x, y)) = self.game.selected_cell else {
             return;
         };
+        if self.build_at(x, y, kind) {
+            self.game.build_kind = None;
+            self.game.selected_cell = Some((x, y));
+        }
+    }
+
+    pub fn can_build_at(&self, x: u16, y: u16, kind: TowerKind) -> bool {
         if self.is_path(x, y) {
-            return;
+            return false;
         }
         if self.tower_index_at(x, y).is_some() {
-            return;
+            return false;
+        }
+        self.game.money >= Self::tower_cost(kind)
+    }
+
+    pub fn build_at(&mut self, x: u16, y: u16, kind: TowerKind) -> bool {
+        if !self.can_build_at(x, y, kind) {
+            return false;
         }
         let cost = Self::tower_cost(kind);
-        if self.game.money < cost {
-            return;
-        }
         self.game.money -= cost;
         self.game.towers.push(Tower {
             x,
@@ -831,7 +842,7 @@ impl App {
             level: 1,
             cooldown: 0,
         });
-        self.game.build_kind = None;
+        true
     }
 
     fn try_upgrade(&mut self) {

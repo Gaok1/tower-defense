@@ -246,7 +246,7 @@ fn draw_map_panel(f: &mut Frame, app: &mut App, area: Rect) {
     if hint_area.height == 1 {
         let hint = Paragraph::new(Line::from(vec![
             Span::styled("Mouse", Style::default().fg(text_dim())),
-            Span::raw(": select / click  "),
+            Span::raw(": select / place  "),
             Span::styled("Space", Style::default().fg(text_dim())),
             Span::raw(": start/pause  "),
             Span::styled("B", Style::default().fg(text_dim())),
@@ -539,21 +539,41 @@ fn draw_inspector_panel(f: &mut Frame, app: &mut App, area: Rect) {
         action_rows[1],
     );
 
-    f.render_widget(
-        Paragraph::new(format!(
-            "Build [B] ({}) — grass",
-            app.game
-                .build_kind
-                .map(App::tower_cost)
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "-".to_string())
-        ))
-        .style(if app.game.build_kind.is_some() {
-            Style::default().fg(good()).bg(bg())
+    let build_label = if let Some(kind) = app.game.build_kind {
+        if let Some((x, y)) = app.game.selected_cell {
+            if app.can_build_at(x, y, kind) {
+                format!(
+                    "Build [B] ({}) — click to place",
+                    App::tower_cost(kind)
+                )
+            } else if app.is_path(x, y) || app.tower_index_at(x, y).is_some() {
+                format!(
+                    "Build [B] ({}) — blocked tile",
+                    App::tower_cost(kind)
+                )
+            } else {
+                format!(
+                    "Build [B] ({}) — need more $",
+                    App::tower_cost(kind)
+                )
+            }
         } else {
-            Style::default().fg(text_dim()).bg(bg())
-        })
-        .alignment(Alignment::Left),
+            format!("Build [B] ({}) — select tile", App::tower_cost(kind))
+        }
+    } else {
+        "Build [B] (—) — select tower type".to_string()
+    };
+
+    let build_style = if app.game.build_kind.is_some() {
+        Style::default().fg(good()).bg(bg())
+    } else {
+        Style::default().fg(text_dim()).bg(bg())
+    };
+
+    f.render_widget(
+        Paragraph::new(build_label)
+            .style(build_style)
+            .alignment(Alignment::Left),
         action_rows[2],
     );
 }
@@ -627,7 +647,7 @@ fn draw_compact_info(f: &mut Frame, app: &App, area: Rect) {
         )),
         Line::from(sel),
         Line::from(format!(
-            "Build: {} ({}). Switch: 1 Basic • 2 Sniper • 3 Rapid",
+            "Build: {} ({}). Click to place. Switch: 1 Basic • 2 Sniper • 3 Rapid",
             app.game.build_kind.map(tower_kind_label).unwrap_or("-"),
             app.game
                 .build_kind
@@ -719,6 +739,11 @@ impl<'a> Widget for MapWidget<'a> {
         let vp = app.ui.viewport;
         let range_focus = range_focus(app);
         let goal = app.game.path.last().copied();
+        let build_preview = app
+            .game
+            .build_kind
+            .and_then(|kind| app.game.selected_cell.map(|cell| (cell, kind)))
+            .filter(|((x, y), kind)| app.can_build_at(*x, *y, *kind));
 
         let cell_bg = |cell_x: u16, cell_y: u16| -> Color {
             if app.game.selected_cell == Some((cell_x, cell_y)) {
@@ -792,6 +817,26 @@ impl<'a> Widget for MapWidget<'a> {
                         })
                         .bg(bg())
                         .add_modifier(Modifier::BOLD);
+                }
+
+                if build_preview == Some(((cell_x, cell_y), TowerKind::Basic)) {
+                    tile = assets::GLYPH_TOWER_BASIC;
+                    style = Style::default()
+                        .fg(tower_kind_color(TowerKind::Basic))
+                        .bg(bg())
+                        .add_modifier(Modifier::DIM);
+                } else if build_preview == Some(((cell_x, cell_y), TowerKind::Sniper)) {
+                    tile = assets::GLYPH_TOWER_SNIPER;
+                    style = Style::default()
+                        .fg(tower_kind_color(TowerKind::Sniper))
+                        .bg(bg())
+                        .add_modifier(Modifier::DIM);
+                } else if build_preview == Some(((cell_x, cell_y), TowerKind::Rapid)) {
+                    tile = assets::GLYPH_TOWER_RAPID;
+                    style = Style::default()
+                        .fg(tower_kind_color(TowerKind::Rapid))
+                        .bg(bg())
+                        .add_modifier(Modifier::DIM);
                 }
 
                 if app.enemy_at(cell_x, cell_y) {
