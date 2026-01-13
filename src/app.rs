@@ -96,6 +96,9 @@ pub struct UiState {
     pub hit: UiHitboxes,
     pub viewport: MapViewport,
     pub zoom: u16,
+    pub manual_pan: bool,
+    pub drag_origin: Option<(u16, u16)>,
+    pub drag_view: Option<(u16, u16)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +125,8 @@ pub struct Enemy {
     pub path_i: usize,
     pub hp: i32,
     pub move_cd: u16, // ticks até o próximo passo
+    pub slow_ticks: u16,
+    pub slow_percent: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -134,6 +139,7 @@ pub struct Projectile {
     pub damage: i32,
     pub step_cd: u16, // ticks até andar 1 tile (pra dar tempo de ver FX)
     pub kind: TowerKind,
+    pub source_level: u8,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -192,6 +198,7 @@ pub struct GameState {
     pub selected_cell: Option<(u16, u16)>,
     pub build_kind: Option<TowerKind>,
     pub map_name: String,
+    pub pending_build: Option<(u16, u16)>,
 
     pub path: Vec<(u16, u16)>,
     pub towers: Vec<Tower>,
@@ -255,6 +262,9 @@ impl App {
                 hit: UiHitboxes::default(),
                 viewport: MapViewport::default(),
                 zoom: 2,
+                manual_pan: false,
+                drag_origin: None,
+                drag_view: None,
             },
             game: GameState {
                 running: false,
@@ -267,6 +277,7 @@ impl App {
                 selected_cell: Some(selected_cell),
                 build_kind: None,
                 map_name: map.name.to_string(),
+                pending_build: None,
                 path: map.path,
                 towers: vec![Tower {
                     x: selected_cell.0,
@@ -367,8 +378,16 @@ impl App {
                 continue;
             }
 
-            if e.move_cd > sp {
-                e.move_cd -= sp;
+            if e.slow_ticks > 0 {
+                e.slow_ticks = e.slow_ticks.saturating_sub(1);
+            } else {
+                e.slow_percent = 0;
+            }
+            let slow_factor = 100u16.saturating_sub(e.slow_percent as u16);
+            let effective_sp = (sp * slow_factor / 100).max(1);
+
+            if e.move_cd > effective_sp {
+                e.move_cd -= effective_sp;
                 continue;
             }
 
@@ -385,7 +404,7 @@ impl App {
 
     fn tick_towers(&mut self) {
         let sp = self.game.speed.max(1) as u16;
-        let mut spawns: Vec<(u16, u16, u16, u16, i32, TowerKind)> = Vec::new();
+        let mut spawns: Vec<(u16, u16, u16, u16, i32, TowerKind, u8)> = Vec::new();
 
         for t in &mut self.game.towers {
             if t.cooldown > sp {
@@ -405,12 +424,12 @@ impl App {
                 continue;
             };
 
-            spawns.push((t.x, t.y, tx, ty, stats.attack, t.kind));
+            spawns.push((t.x, t.y, tx, ty, stats.attack, t.kind, t.level));
             t.cooldown = stats.fire_cd;
         }
 
-        for (from_x, from_y, to_x, to_y, dmg, kind) in spawns {
-            self.spawn_projectile(from_x, from_y, to_x, to_y, dmg, kind);
+        for (from_x, from_y, to_x, to_y, dmg, kind, level) in spawns {
+            self.spawn_projectile(from_x, from_y, to_x, to_y, dmg, kind, level);
         }
     }
 
@@ -460,6 +479,11 @@ impl App {
                     if e.hp < 0 {
                         e.hp = 0;
                     }
+                    if p.kind == TowerKind::Frost {
+                        let (slow_percent, slow_ticks) = Self::frost_slow(p.source_level);
+                        e.slow_percent = e.slow_percent.max(slow_percent);
+                        e.slow_ticks = e.slow_ticks.max(slow_ticks);
+                    }
                 }
 
                 impacts.push((hit_x, hit_y, p.kind));
@@ -508,6 +532,8 @@ impl App {
                 path_i: 0,
                 hp,
                 move_cd: base + stagger,
+                slow_ticks: 0,
+                slow_percent: 0,
             });
         }
 
@@ -542,6 +568,7 @@ impl App {
         to_y: u16,
         dmg: i32,
         kind: TowerKind,
+        level: u8,
     ) {
         let ttl = match kind {
             TowerKind::Sniper => 120,
@@ -561,6 +588,7 @@ impl App {
             damage: dmg,
             step_cd: self.projectile_step_cd(kind),
             kind,
+            source_level: level,
         });
 
         // pequeno flash de "muzzle" na torre
@@ -855,6 +883,7 @@ impl App {
             selected_cell: Some(selected_cell),
             build_kind: None,
             map_name: map.name.to_string(),
+            pending_build: None,
             path: map.path,
             towers: vec![Tower {
                 x: selected_cell.0,
@@ -875,6 +904,9 @@ impl App {
         self.ui.hover_build_kind = None;
         self.ui.hover_button = None;
         self.ui.viewport = MapViewport::default();
+        self.ui.manual_pan = false;
+        self.ui.drag_origin = None;
+        self.ui.drag_view = None;
         self.screen = Screen::Game;
         self.spawn_wave();
     }
@@ -886,6 +918,7 @@ impl App {
         let Some((x, y)) = self.game.selected_cell else {
             return;
         };
+        self.game.pending_build = None;
         if self.build_at(x, y, kind) {
             self.game.build_kind = None;
             self.game.selected_cell = Some((x, y));
@@ -1102,6 +1135,14 @@ impl App {
             Some(current) if current == kind => None,
             _ => Some(kind),
         };
+        self.game.pending_build = None;
+    }
+
+    pub fn frost_slow(level: u8) -> (u8, u16) {
+        let lvl = level.max(1) as u16;
+        let slow_percent = (20 + lvl * 3).min(60) as u8;
+        let slow_ticks = 8 + lvl * 2;
+        (slow_percent, slow_ticks)
     }
 
     fn build_maps() -> Vec<MapSpec> {
