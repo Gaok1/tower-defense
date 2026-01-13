@@ -224,10 +224,10 @@ pub struct App {
 
 #[derive(Debug, Clone)]
 pub struct MapSpec {
-    name: &'static str,
-    grid_w: u16,
-    grid_h: u16,
-    path: Vec<(u16, u16)>,
+    pub name: &'static str,
+    pub grid_w: u16,
+    pub grid_h: u16,
+    pub path: Vec<(u16, u16)>,
 }
 
 impl App {
