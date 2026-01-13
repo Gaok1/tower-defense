@@ -51,6 +51,8 @@ pub fn pump(app: &mut App) -> Result<()> {
                 app.ui.hover_map_select = hit_test_map_select(app, m.column, m.row);
             }
             MouseEventKind::Down(MouseButton::Left) => {
+                app.ui.drag_origin = None;
+                app.ui.drag_view = None;
                 if app.screen == Screen::MapSelect {
                     if let Some(action) = hit_test_map_select(app, m.column, m.row) {
                         match action {
@@ -69,11 +71,21 @@ pub fn pump(app: &mut App) -> Result<()> {
                     app.toggle_build_kind(kind);
                 } else if let Some(cell) = map_cell_at(app, m.column, m.row) {
                     if let Some(kind) = app.game.build_kind {
-                        if app.build_at(cell.0, cell.1, kind) {
-                            app.game.build_kind = None;
-                            app.game.selected_cell = Some(cell);
+                        app.game.selected_cell = Some(cell);
+                        if app.can_build_at(cell.0, cell.1, kind) {
+                            if app.game.pending_build == Some(cell) {
+                                if app.build_at(cell.0, cell.1, kind) {
+                                    app.game.build_kind = None;
+                                    app.game.pending_build = None;
+                                }
+                            } else {
+                                app.game.pending_build = Some(cell);
+                            }
+                        } else {
+                            app.game.pending_build = None;
                         }
                     } else {
+                        app.game.pending_build = None;
                         // Toggle apenas para torre: clicar de novo deseleciona (e some o range).
                         if app.game.selected_cell == Some(cell)
                             && app.tower_index_at(cell.0, cell.1).is_some()
@@ -84,6 +96,33 @@ pub fn pump(app: &mut App) -> Result<()> {
                         }
                     }
                 }
+            }
+            MouseEventKind::Down(MouseButton::Right) => {
+                if app.screen == Screen::Game && map_cell_at(app, m.column, m.row).is_some() {
+                    app.ui.drag_origin = Some((m.column, m.row));
+                    app.ui.drag_view = Some((app.ui.viewport.view_x, app.ui.viewport.view_y));
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Right) => {
+                if app.screen == Screen::Game {
+                    if let (Some((ox, oy)), Some((vx, vy))) = (app.ui.drag_origin, app.ui.drag_view)
+                    {
+                        let vp = app.ui.viewport;
+                        let dx = (ox as i16 - m.column as i16) / vp.tile_w.max(1) as i16;
+                        let dy = (oy as i16 - m.row as i16) / vp.tile_h.max(1) as i16;
+                        let max_x = app.game.grid_w.saturating_sub(vp.vis_w);
+                        let max_y = app.game.grid_h.saturating_sub(vp.vis_h);
+                        let next_x = (vx as i16 + dx).clamp(0, max_x as i16) as u16;
+                        let next_y = (vy as i16 + dy).clamp(0, max_y as i16) as u16;
+                        app.ui.viewport.view_x = next_x;
+                        app.ui.viewport.view_y = next_y;
+                        app.ui.manual_pan = true;
+                    }
+                }
+            }
+            MouseEventKind::Up(MouseButton::Right) => {
+                app.ui.drag_origin = None;
+                app.ui.drag_view = None;
             }
             _ => {}
         },

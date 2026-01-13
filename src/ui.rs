@@ -19,7 +19,7 @@ use crate::{
 
 #[inline]
 fn bg() -> Color {
-    Color::Black
+    Color::Rgb(10, 14, 10)
 }
 
 #[inline]
@@ -55,6 +55,16 @@ fn warn() -> Color {
 #[inline]
 fn good() -> Color {
     Color::LightGreen
+}
+
+#[inline]
+fn map_bg(zoom: u16) -> Color {
+    match zoom {
+        1 => Color::Rgb(8, 22, 10),
+        2 => Color::Rgb(12, 28, 12),
+        3 => Color::Rgb(16, 34, 16),
+        _ => Color::Rgb(20, 40, 20),
+    }
 }
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -247,6 +257,8 @@ fn draw_map_panel(f: &mut Frame, app: &mut App, area: Rect) {
         let hint = Paragraph::new(Line::from(vec![
             Span::styled("Mouse", Style::default().fg(text_dim())),
             Span::raw(": select / place  "),
+            Span::styled("Right drag", Style::default().fg(text_dim())),
+            Span::raw(": pan  "),
             Span::styled("Space", Style::default().fg(text_dim())),
             Span::raw(": start/pause  "),
             Span::styled("B", Style::default().fg(text_dim())),
@@ -264,7 +276,7 @@ fn draw_map_panel(f: &mut Frame, app: &mut App, area: Rect) {
             Span::styled("Q", Style::default().fg(text_dim())),
             Span::raw(": quit"),
         ]))
-        .style(Style::default().fg(text_dim()).bg(bg()));
+        .style(Style::default().fg(text_dim()).bg(map_bg(app.ui.zoom)));
         f.render_widget(hint, hint_area);
     }
 }
@@ -277,7 +289,6 @@ fn compute_viewport(app: &App, inner: Rect) -> MapViewport {
     vp.vis_w = (inner.width / vp.tile_w).max(1).min(app.game.grid_w);
     vp.vis_h = inner.height.max(1).min(app.game.grid_h);
 
-    let (cx, cy) = app.game.selected_cell.unwrap_or((0, 0));
     let mut vx = app.ui.viewport.view_x;
     let mut vy = app.ui.viewport.view_y;
 
@@ -286,15 +297,22 @@ fn compute_viewport(app: &App, inner: Rect) -> MapViewport {
     vx = vx.min(max_x);
     vy = vy.min(max_y);
 
-    if cx < vx {
-        vx = cx;
-    } else if cx >= vx + vp.vis_w {
-        vx = cx.saturating_sub(vp.vis_w - 1);
-    }
-    if cy < vy {
-        vy = cy;
-    } else if cy >= vy + vp.vis_h {
-        vy = cy.saturating_sub(vp.vis_h - 1);
+    if !app.ui.manual_pan {
+        if app.ui.viewport.view_x == 0 && app.ui.viewport.view_y == 0 {
+            vx = max_x / 2;
+            vy = max_y / 2;
+        } else if let Some((cx, cy)) = app.game.selected_cell {
+            if cx < vx {
+                vx = cx;
+            } else if cx >= vx + vp.vis_w {
+                vx = cx.saturating_sub(vp.vis_w - 1);
+            }
+            if cy < vy {
+                vy = cy;
+            } else if cy >= vy + vp.vis_h {
+                vy = cy.saturating_sub(vp.vis_h - 1);
+            }
+        }
     }
 
     vp.view_x = vx.min(max_x);
@@ -431,6 +449,10 @@ fn draw_inspector_panel(f: &mut Frame, app: &mut App, area: Rect) {
             upgrade_hover.then_some(d.fire_cd),
         ));
 
+        let effect_line = tower_effect_line(t.kind, t.level, upgrade_hover);
+        stats_lines.push(Line::from(""));
+        stats_lines.push(effect_line);
+
         stats_lines.push(Line::from(""));
         stats_lines.push(Line::from(vec![
             Span::styled("Build", Style::default().fg(text_dim())),
@@ -473,10 +495,12 @@ fn draw_inspector_panel(f: &mut Frame, app: &mut App, area: Rect) {
                     Span::styled("CD", Style::default().fg(text_dim())),
                     Span::raw(format!(": {}", preview.fire_cd)),
                 ]));
+                stats_lines.push(Line::from(""));
+                stats_lines.push(tower_effect_line(kind, 1, false));
             }
 
             stats_lines.push(Line::from(Span::styled(
-                "Select grass tile and press Build.",
+                "Click twice on a tile or press Build.",
                 Style::default().fg(text_dim()),
             )));
         } else {
@@ -543,7 +567,10 @@ fn draw_inspector_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let build_label = if let Some(kind) = app.game.build_kind {
         if let Some((x, y)) = app.game.selected_cell {
             if app.can_build_at(x, y, kind) {
-                format!("Build [B] ({}) — click to place", App::tower_cost(kind))
+                format!(
+                    "Build [B] ({}) — double click or press Build",
+                    App::tower_cost(kind)
+                )
             } else if app.is_path(x, y) || app.tower_index_at(x, y).is_some() {
                 format!("Build [B] ({}) — blocked tile", App::tower_cost(kind))
             } else {
@@ -639,7 +666,7 @@ fn draw_compact_info(f: &mut Frame, app: &App, area: Rect) {
         )),
         Line::from(sel),
         Line::from(format!(
-            "Build: {} ({}). Click to place. Switch: 1 Basic • 2 Sniper • 3 Rapid • 4 Cannon • 5 Tesla • 6 Frost",
+            "Build: {} ({}). Double click or press B. Switch: 1 Basic • 2 Sniper • 3 Rapid • 4 Cannon • 5 Tesla • 6 Frost",
             app.game.build_kind.map(tower_kind_label).unwrap_or("-"),
             app.game
                 .build_kind
@@ -771,14 +798,14 @@ impl<'a> Widget for MapWidget<'a> {
                 Color::Blue
             } else if app.ui.hover_cell == Some((cell_x, cell_y)) {
                 Color::DarkGray
-            } else if let Some((rx, ry, range)) = range_focus {
-                if manhattan(cell_x, cell_y, rx, ry) == range {
+            } else if let Some((rx, ry, range, shape)) = range_focus {
+                if range_match(shape, cell_x, cell_y, rx, ry, range) {
                     Color::Blue
                 } else {
-                    bg()
+                    map_bg(app.ui.zoom)
                 }
             } else {
-                bg()
+                map_bg(app.ui.zoom)
             }
         };
 
@@ -791,7 +818,7 @@ impl<'a> Widget for MapWidget<'a> {
             for x in area.left()..area.right() {
                 buf.get_mut(x, y)
                     .set_symbol(" ")
-                    .set_style(Style::default().bg(bg()));
+                    .set_style(Style::default().bg(map_bg(app.ui.zoom)));
             }
         }
 
@@ -808,18 +835,20 @@ impl<'a> Widget for MapWidget<'a> {
                 let is_sel = app.game.selected_cell == Some((cell_x, cell_y));
 
                 let mut tile = assets::GLYPH_GRASS[(cell_x as usize + cell_y as usize) % 4];
-                let mut style = Style::default().fg(Color::Green).bg(bg());
+                let mut style = Style::default().fg(Color::Green).bg(map_bg(app.ui.zoom));
 
                 if app.is_path(cell_x, cell_y) {
                     tile = assets::GLYPH_PATH[(cell_x as usize + cell_y as usize) % 2];
-                    style = Style::default().fg(Color::LightYellow).bg(bg());
+                    style = Style::default()
+                        .fg(Color::LightYellow)
+                        .bg(map_bg(app.ui.zoom));
                 }
 
                 if goal == Some((cell_x, cell_y)) {
                     tile = assets::GLYPH_GOAL;
                     style = Style::default()
                         .fg(Color::LightMagenta)
-                        .bg(bg())
+                        .bg(map_bg(app.ui.zoom))
                         .add_modifier(Modifier::BOLD);
                 }
 
@@ -839,7 +868,7 @@ impl<'a> Widget for MapWidget<'a> {
                         } else {
                             tower_kind_color(t.kind)
                         })
-                        .bg(bg())
+                        .bg(map_bg(app.ui.zoom))
                         .add_modifier(Modifier::BOLD);
                 }
 
@@ -855,7 +884,7 @@ impl<'a> Widget for MapWidget<'a> {
                         };
                         style = Style::default()
                             .fg(tower_kind_color(preview_kind))
-                            .bg(bg())
+                            .bg(map_bg(app.ui.zoom))
                             .add_modifier(Modifier::DIM);
                     }
                 }
@@ -864,7 +893,7 @@ impl<'a> Widget for MapWidget<'a> {
                     tile = assets::GLYPH_ENEMY;
                     style = Style::default()
                         .fg(Color::Red)
-                        .bg(bg())
+                        .bg(map_bg(app.ui.zoom))
                         .add_modifier(Modifier::BOLD);
                 }
 
@@ -880,14 +909,14 @@ impl<'a> Widget for MapWidget<'a> {
                     style = match fx.ttl {
                         4 => Style::default()
                             .fg(base_color)
-                            .bg(bg())
+                            .bg(map_bg(app.ui.zoom))
                             .add_modifier(Modifier::BOLD),
                         3 => Style::default()
                             .fg(base_color)
-                            .bg(bg())
+                            .bg(map_bg(app.ui.zoom))
                             .add_modifier(Modifier::DIM),
-                        2 => Style::default().fg(Color::DarkGray).bg(bg()),
-                        _ => Style::default().fg(text_dim()).bg(bg()),
+                        2 => Style::default().fg(Color::DarkGray).bg(map_bg(app.ui.zoom)),
+                        _ => Style::default().fg(text_dim()).bg(map_bg(app.ui.zoom)),
                     };
                 }
 
@@ -895,8 +924,8 @@ impl<'a> Widget for MapWidget<'a> {
                     style = style.bg(Color::Blue).fg(Color::White);
                 } else if is_hover {
                     style = style.bg(Color::DarkGray).fg(Color::Black);
-                } else if let Some((rx, ry, range)) = range_focus {
-                    if manhattan(cell_x, cell_y, rx, ry) == range {
+                } else if let Some((rx, ry, range, shape)) = range_focus {
+                    if range_match(shape, cell_x, cell_y, rx, ry, range) {
                         style = style.bg(Color::Blue);
                     }
                 }
@@ -944,7 +973,7 @@ impl<'a> Widget for MapWidget<'a> {
                 TowerKind::Rapid => (assets::GLYPH_PROJECTILE_RAPID, Color::Yellow),
                 TowerKind::Cannon => (assets::GLYPH_PROJECTILE_CANNON, Color::LightRed),
                 TowerKind::Tesla => (assets::GLYPH_PROJECTILE_TESLA, Color::LightBlue),
-                TowerKind::Frost => (assets::GLYPH_PROJECTILE_FROST, Color::Cyan),
+                TowerKind::Frost => (assets::GLYPH_PROJECTILE_FROST, Color::LightBlue),
             };
             let style = Style::default()
                 .fg(color)
@@ -1144,7 +1173,7 @@ impl<'a> Widget for MapPreviewWidget<'a> {
             for x in area.left()..area.right() {
                 buf.get_mut(x, y)
                     .set_symbol(" ")
-                    .set_style(Style::default().bg(bg()));
+                    .set_style(Style::default().bg(map_bg(self.zoom)));
             }
         }
 
@@ -1159,7 +1188,7 @@ impl<'a> Widget for MapPreviewWidget<'a> {
                 let sy = area.y + gy * tile_h;
 
                 let mut tile = assets::GLYPH_GRASS[(cell_x as usize + cell_y as usize) % 4];
-                let mut style = Style::default().fg(Color::Green).bg(bg());
+                let mut style = Style::default().fg(Color::Green).bg(map_bg(self.zoom));
 
                 if self
                     .map
@@ -1168,14 +1197,16 @@ impl<'a> Widget for MapPreviewWidget<'a> {
                     .any(|&(px, py)| px == cell_x && py == cell_y)
                 {
                     tile = assets::GLYPH_PATH[(cell_x as usize + cell_y as usize) % 2];
-                    style = Style::default().fg(Color::LightYellow).bg(bg());
+                    style = Style::default()
+                        .fg(Color::LightYellow)
+                        .bg(map_bg(self.zoom));
                 }
 
                 if goal == Some((cell_x, cell_y)) {
                     tile = assets::GLYPH_GOAL;
                     style = Style::default()
                         .fg(Color::LightMagenta)
-                        .bg(bg())
+                        .bg(map_bg(self.zoom))
                         .add_modifier(Modifier::BOLD);
                 }
 
@@ -1224,7 +1255,7 @@ fn particle_visual(kind: ParticleKind, ttl: u8) -> (&'static str, Style) {
         ),
         ParticleKind::Shard => (
             assets::SHARD[idx],
-            Style::default().fg(Color::Cyan).bg(bg()),
+            Style::default().fg(Color::LightBlue).bg(bg()),
         ),
     }
 }
@@ -1247,15 +1278,21 @@ fn tower_kind_color(kind: TowerKind) -> Color {
         TowerKind::Rapid => Color::Yellow,
         TowerKind::Cannon => Color::LightRed,
         TowerKind::Tesla => Color::LightBlue,
-        TowerKind::Frost => Color::Cyan,
+        TowerKind::Frost => Color::LightBlue,
     }
 }
 
-fn range_focus(app: &App) -> Option<(u16, u16, u16)> {
+#[derive(Debug, Clone, Copy)]
+enum RangeShape {
+    Diamond,
+    Hex,
+}
+
+fn range_focus(app: &App) -> Option<(u16, u16, u16, RangeShape)> {
     // Torre em foco: mostra range dela.
     if let Some(t) = app.selected_tower() {
         let stats = App::tower_stats(t);
-        return Some((t.x, t.y, stats.range));
+        return Some((t.x, t.y, stats.range, range_shape(t.kind)));
     }
 
     let (x, y) = app.game.selected_cell?;
@@ -1264,9 +1301,77 @@ fn range_focus(app: &App) -> Option<(u16, u16, u16)> {
     }
 
     let preview = app.build_preview_stats()?;
-    Some((x, y, preview.range))
+    Some((x, y, preview.range, range_shape(app.game.build_kind?)))
 }
 
 fn manhattan(x1: u16, y1: u16, x2: u16, y2: u16) -> u16 {
     x1.abs_diff(x2) + y1.abs_diff(y2)
+}
+
+fn hex_distance(x1: u16, y1: u16, x2: u16, y2: u16) -> u16 {
+    let dx = x1 as i32 - x2 as i32;
+    let dy = y1 as i32 - y2 as i32;
+    let dz = -dx - dy;
+    ((dx.abs() + dy.abs() + dz.abs()) / 2) as u16
+}
+
+fn range_shape(kind: TowerKind) -> RangeShape {
+    match kind {
+        TowerKind::Sniper | TowerKind::Frost => RangeShape::Hex,
+        _ => RangeShape::Diamond,
+    }
+}
+
+fn range_match(shape: RangeShape, x: u16, y: u16, cx: u16, cy: u16, range: u16) -> bool {
+    match shape {
+        RangeShape::Diamond => manhattan(x, y, cx, cy) == range,
+        RangeShape::Hex => hex_distance(x, y, cx, cy) == range,
+    }
+}
+
+fn tower_effect_line(kind: TowerKind, level: u8, upgrade_hover: bool) -> Line<'static> {
+    let (label, color, next_label) = tower_effect_labels(kind, level, upgrade_hover);
+    let mut spans = vec![
+        Span::styled("Effect: ", Style::default().fg(text_dim())),
+        Span::styled(
+            label,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+    ];
+    if let Some(next) = next_label {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled("→", Style::default().fg(text_dim())));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            next,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn tower_effect_labels(
+    kind: TowerKind,
+    level: u8,
+    upgrade_hover: bool,
+) -> (String, Color, Option<String>) {
+    match kind {
+        TowerKind::Frost => {
+            let (slow_percent, slow_ticks) = App::frost_slow(level);
+            let label = format!("Slow {slow_percent}% / {slow_ticks}t");
+            let next = if upgrade_hover {
+                let next_level = (level + 1).min(9);
+                if next_level > level {
+                    let (next_percent, next_ticks) = App::frost_slow(next_level);
+                    Some(format!("Slow {next_percent}% / {next_ticks}t"))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            (label, Color::LightBlue, next)
+        }
+        _ => ("—".to_string(), text_dim(), None),
+    }
 }
