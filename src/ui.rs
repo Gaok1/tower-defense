@@ -979,15 +979,15 @@ impl<'a> Widget for MapWidget<'a> {
                                 ("◎", Color::LightMagenta)
                             } else {
                                 let k = tex_pick(cell_x, cell_y, dx, dy, 0xBEEF_u32, 3);
-                                (["░", "▒", "▓"][k as usize], Color::Magenta)
+                                (["▒", "▓", "▒"][k as usize], Color::Magenta)
                             }
                         } else if is_path {
                             let k = tex_pick(cell_x, cell_y, dx, dy, 0xCAFE_u32, 5);
-                            (["▒", "▒", "▓", "▒", "░"][k as usize], Color::LightYellow)
+                            ([" ", "▚", "▞", "▚", " "][k as usize], Color::LightYellow)
                         } else {
                             let k = tex_pick(cell_x, cell_y, dx, dy, 0x1234_u32, 7);
                             (
-                                ["░", "░", "▒", "░", "▒", "░", "▒"][k as usize],
+                                [" ", " ", "▗", "▖", "▝", "▘", " "][k as usize],
                                 Color::Green,
                             )
                         };
@@ -1550,13 +1550,13 @@ impl<'a> Widget for MapPreviewWidget<'a> {
                             if dx == cx && dy == cy {
                                 ("◎", Color::LightMagenta)
                             } else {
-                                ("░", Color::Magenta)
+                                ("▓", Color::Magenta)
                             }
                         } else if is_path {
-                            ("▒", Color::LightYellow)
+                            ("▚", Color::LightYellow)
                         } else {
                             let k = tex_pick(cell_x, cell_y, dx, dy, 0x1234_u32, 5);
-                            (["░", "░", "▒", "░", "▒"][k as usize], Color::Green)
+                            ([" ", "▗", "▖", "▝", "▘"][k as usize], Color::Green)
                         };
 
                         let x = tile_x + dx;
@@ -1731,7 +1731,7 @@ fn tower_effect_labels(
                 let next_level = (level + 1).min(9);
                 if next_level > level {
                     let (next_percent, next_ticks) = App::frost_slow(next_level);
-                    let (nr, nb, nt) = App::frost_burst_params(next_level);
+                    let (nr, nb, _nt) = App::frost_burst_params(next_level);
                     Some(format!(
                         "Slow {next_percent}%/{next_ticks}t + Chill {nb}% r{nr}"
                     ))
