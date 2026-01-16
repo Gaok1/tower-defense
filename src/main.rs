@@ -1,5 +1,6 @@
 mod app;
 mod assets;
+mod fx;
 mod input;
 mod save;
 mod ui;
