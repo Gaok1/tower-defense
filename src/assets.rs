@@ -33,21 +33,13 @@ impl Sprite {
 pub const TOWER_BASIC_Z0: Sprite = Sprite {
     w: 2,
     h: 2,
-    rows: &[
-        "BB",
-        "BB",
-    ],
+    rows: &["BB", "BB"],
 };
 
 pub const TOWER_BASIC_Z1: Sprite = Sprite {
     w: 4,
     h: 4,
-    rows: &[
-        " ▄▄ ",
-        "████",
-        " ▐▌ ",
-        " ▀▀ ",
-    ],
+    rows: &[" ▄▄ ", "████", " ▐▌ ", " ▀▀ "],
 };
 pub const TOWER_BASIC_Z2: Sprite = Sprite {
     w: 8,
@@ -108,21 +100,13 @@ pub const TOWER_BASIC_Z4: Sprite = Sprite {
 pub const TOWER_SNIPER_Z0: Sprite = Sprite {
     w: 2,
     h: 2,
-    rows: &[
-        "SS",
-        "SS",
-    ],
+    rows: &["SS", "SS"],
 };
 
 pub const TOWER_SNIPER_Z1: Sprite = Sprite {
     w: 4,
     h: 4,
-    rows: &[
-        "╞══╗",
-        "└┬─╝",
-        " ▐▌ ",
-        " ▀▀ ",
-    ],
+    rows: &["╞══╗", "└┬─╝", " ▐▌ ", " ▀▀ "],
 };
 pub const TOWER_SNIPER_Z2: Sprite = Sprite {
     w: 8,
@@ -183,21 +167,13 @@ pub const TOWER_SNIPER_Z4: Sprite = Sprite {
 pub const TOWER_RAPID_Z0: Sprite = Sprite {
     w: 2,
     h: 2,
-    rows: &[
-        "RR",
-        "RR",
-    ],
+    rows: &["RR", "RR"],
 };
 
 pub const TOWER_RAPID_Z1: Sprite = Sprite {
     w: 4,
     h: 4,
-    rows: &[
-        "╔══╗",
-        "╚╦╦╝",
-        " ▐▌ ",
-        " ▀▀ ",
-    ],
+    rows: &["╔══╗", "╚╦╦╝", " ▐▌ ", " ▀▀ "],
 };
 pub const TOWER_RAPID_Z2: Sprite = Sprite {
     w: 8,
@@ -258,21 +234,13 @@ pub const TOWER_RAPID_Z4: Sprite = Sprite {
 pub const TOWER_CANNON_Z0: Sprite = Sprite {
     w: 2,
     h: 2,
-    rows: &[
-        "CC",
-        "CC",
-    ],
+    rows: &["CC", "CC"],
 };
 
 pub const TOWER_CANNON_Z1: Sprite = Sprite {
     w: 4,
     h: 4,
-    rows: &[
-        "◉══◉",
-        " ▄▄ ",
-        "▐██▌",
-        " ▀▀ ",
-    ],
+    rows: &["◉══◉", " ▄▄ ", "▐██▌", " ▀▀ "],
 };
 pub const TOWER_CANNON_Z2: Sprite = Sprite {
     w: 8,
@@ -333,21 +301,13 @@ pub const TOWER_CANNON_Z4: Sprite = Sprite {
 pub const TOWER_TESLA_Z0: Sprite = Sprite {
     w: 2,
     h: 2,
-    rows: &[
-        "TT",
-        "TT",
-    ],
+    rows: &["TT", "TT"],
 };
 
 pub const TOWER_TESLA_Z1: Sprite = Sprite {
     w: 4,
     h: 4,
-    rows: &[
-        " ║║ ",
-        "⚡╬⚡",
-        " ║║ ",
-        " ▀▀ ",
-    ],
+    rows: &[" ║║ ", "⚡╬⚡", " ║║ ", " ▀▀ "],
 };
 pub const TOWER_TESLA_Z2: Sprite = Sprite {
     w: 8,
@@ -408,21 +368,13 @@ pub const TOWER_TESLA_Z4: Sprite = Sprite {
 pub const TOWER_FROST_Z0: Sprite = Sprite {
     w: 2,
     h: 2,
-    rows: &[
-        "FF",
-        "FF",
-    ],
+    rows: &["FF", "FF"],
 };
 
 pub const TOWER_FROST_Z1: Sprite = Sprite {
     w: 4,
     h: 4,
-    rows: &[
-        " ❄  ",
-        "╱╳╲ ",
-        "╲╳╱ ",
-        " ❄  ",
-    ],
+    rows: &[" ❄  ", "╱╳╲ ", "╲╳╱ ", " ❄  "],
 };
 pub const TOWER_FROST_Z2: Sprite = Sprite {
     w: 8,
@@ -486,21 +438,13 @@ pub const TOWER_FROST_Z4: Sprite = Sprite {
 pub const ENEMY_Z0: Sprite = Sprite {
     w: 2,
     h: 2,
-    rows: &[
-        "/\\",
-        "\\/",
-    ],
+    rows: &["/\\", "\\/"],
 };
 
 pub const ENEMY_Z1: Sprite = Sprite {
     w: 4,
     h: 4,
-    rows: &[
-        " ██ ",
-        "█☠█",
-        " ██ ",
-        " ▀▀ ",
-    ],
+    rows: &[" ██ ", "█☠█", " ██ ", " ▀▀ "],
 };
 pub const ENEMY_Z2: Sprite = Sprite {
     w: 8,
@@ -560,21 +504,13 @@ pub const ENEMY_Z4: Sprite = Sprite {
 pub const IMPACT_Z0: Sprite = Sprite {
     w: 2,
     h: 2,
-    rows: &[
-        "++",
-        "++",
-    ],
+    rows: &["++", "++"],
 };
 
 pub const IMPACT_Z1: Sprite = Sprite {
     w: 4,
     h: 4,
-    rows: &[
-        " ✦  ",
-        "✦✹✦ ",
-        " ✦  ",
-        "    ",
-    ],
+    rows: &[" ✦  ", "✦✹✦ ", " ✦  ", "    "],
 };
 pub const IMPACT_Z2: Sprite = Sprite {
     w: 8,

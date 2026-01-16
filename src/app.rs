@@ -1,4 +1,7 @@
-use crate::save;
+use crate::{
+    fx::{FxManager, Vec2i},
+    save,
+};
 use ratatui::layout::Rect;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -159,41 +162,7 @@ pub struct Projectile {
     pub step_cd: u16, // ticks até andar 1 tile (pra dar tempo de ver FX)
     pub kind: TowerKind,
     pub source_level: u8,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum ParticleKind {
-    TrailBasic,
-    TrailSniper,
-    TrailRapid,
-    TrailCannon,
-    TrailTesla,
-    TrailFrost,
-    Spark,
-    Smoke,
-    Arc,
-    Shard,
-    Bolt,
-    Frost,
-    Wave,
-}
-
-#[derive(Debug, Clone)]
-pub struct Particle {
-    pub x: i16,
-    pub y: i16,
-    pub vx: i8,
-    pub vy: i8,
-    pub ttl: u8,
-    pub kind: ParticleKind,
-}
-
-#[derive(Debug, Clone)]
-pub struct ImpactFx {
-    pub x: u16,
-    pub y: u16,
-    pub ttl: u8,
-    pub kind: TowerKind,
+    pub fx_id: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -232,8 +201,7 @@ pub struct GameState {
     pub enemies: Vec<Enemy>,
 
     pub projectiles: Vec<Projectile>,
-    pub impacts: Vec<ImpactFx>,
-    pub particles: Vec<Particle>,
+    pub fx: FxManager,
 
     // economia/time
     pub money_cd: u16,
@@ -333,8 +301,7 @@ impl App {
                 }],
                 enemies: vec![],
                 projectiles: vec![],
-                impacts: vec![],
-                particles: vec![],
+                fx: FxManager::new(),
                 money_cd: 0,
             },
             maps,
@@ -587,8 +554,7 @@ impl App {
             towers,
             enemies: vec![],
             projectiles: vec![],
-            impacts: vec![],
-            particles: vec![],
+            fx: FxManager::new(),
             money_cd: 0,
         };
 
@@ -638,24 +604,7 @@ impl App {
     }
 
     fn tick_fx(&mut self) {
-        for fx in &mut self.game.impacts {
-            fx.ttl = fx.ttl.saturating_sub(1);
-        }
-        self.game.impacts.retain(|fx| fx.ttl > 0);
-
-        for p in &mut self.game.particles {
-            // partículas "andam" lentamente em grid
-            if p.vx != 0 {
-                p.x += p.vx.signum() as i16;
-                p.vx -= p.vx.signum();
-            }
-            if p.vy != 0 {
-                p.y += p.vy.signum() as i16;
-                p.vy -= p.vy.signum();
-            }
-            p.ttl = p.ttl.saturating_sub(1);
-        }
-        self.game.particles.retain(|p| p.ttl > 0);
+        self.game.fx.tick();
     }
 
     fn tick_enemies(&mut self) {
@@ -726,15 +675,17 @@ impl App {
 
     fn tick_projectiles(&mut self) {
         let sp = self.game.speed.max(1) as u16;
-        let mut trails: Vec<(i16, i16, TowerKind, i8, i8)> = Vec::new();
-        let mut impacts: Vec<(u16, u16, TowerKind, u8)> = Vec::new();
-        let mut on_hits: Vec<(TowerKind, u16, u16, i32, u8)> = Vec::new();
+        let mut impacts: Vec<(u16, u16, TowerKind, u8, Option<usize>)> = Vec::new();
+        let mut on_hits: Vec<(TowerKind, u16, u16, i32, u8, Option<usize>)> = Vec::new();
 
         for p in &mut self.game.projectiles {
             if p.ttl > 0 {
                 p.ttl -= 1;
             }
             if p.ttl == 0 {
+                if let Some(fx_id) = p.fx_id {
+                    self.game.fx.despawn(fx_id);
+                }
                 continue;
             }
 
@@ -744,17 +695,17 @@ impl App {
             }
             p.step_cd = Self::projectile_step_cd(p.kind);
 
-            let old_x = p.x;
-            let old_y = p.y;
-
             // move 1 passo em direção ao target (grid)
             let dx = (p.tx - p.x).signum();
             let dy = (p.ty - p.y).signum();
             p.x += dx;
             p.y += dy;
 
-            // trail
-            trails.push((old_x, old_y, p.kind, (-dx) as i8, (-dy) as i8));
+            if let Some(fx_id) = p.fx_id {
+                self.game
+                    .fx
+                    .update_projectile_pos(fx_id, Vec2i::new(p.x, p.y), Vec2i::new(dx, dy));
+            }
 
             if p.x == p.tx && p.y == p.ty {
                 let hit_x = p.x.max(0) as u16;
@@ -775,18 +726,23 @@ impl App {
                         let (slow_percent, slow_ticks) = Self::frost_slow(p.source_level);
                         e.slow_percent = e.slow_percent.max(slow_percent);
                         e.slow_ticks = e.slow_ticks.max(slow_ticks);
+                        self.game.fx.spawn_status_overlay(
+                            ei,
+                            slow_ticks.min(u8::MAX as u16) as u8,
+                            self.rand_u32(),
+                        );
                     }
                 }
-                on_hits.push((p.kind, hit_x, hit_y, p.damage, p.source_level));
+                on_hits.push((p.kind, hit_x, hit_y, p.damage, p.source_level, p.fx_id));
 
-                impacts.push((hit_x, hit_y, p.kind, p.source_level));
+                impacts.push((hit_x, hit_y, p.kind, p.source_level, p.fx_id));
                 p.ttl = 0;
             }
         }
 
         self.game.projectiles.retain(|p| p.ttl > 0);
 
-        for (kind, hit_x, hit_y, damage, level) in on_hits {
+        for (kind, hit_x, hit_y, damage, level, _fx_id) in on_hits {
             if kind == TowerKind::Tesla {
                 self.apply_tesla_chain(hit_x, hit_y, damage, level);
             }
@@ -798,11 +754,11 @@ impl App {
             }
         }
 
-        for (x, y, kind, dvx, dvy) in trails {
-            self.spawn_trail(kind, x, y, dvx, dvy);
-        }
-        for (x, y, kind, level) in impacts {
+        for (x, y, kind, level, fx_id) in impacts {
             self.spawn_impact(x, y, kind, level);
+            if let Some(fx_id) = fx_id {
+                self.game.fx.despawn(fx_id);
+            }
         }
     }
 
@@ -847,8 +803,7 @@ impl App {
 
         // limpa FX antigos pra não virar bagunça visual ao trocar wave
         self.game.projectiles.clear();
-        self.game.impacts.clear();
-        self.game.particles.clear();
+        self.game.fx.clear();
 
         self.autosave_wave();
     }
@@ -925,7 +880,7 @@ impl App {
         to_y: u16,
         dmg: i32,
         kind: TowerKind,
-        level: u8,
+        _level: u8,
     ) {
         let ttl = match kind {
             TowerKind::Sniper => 120,
@@ -935,276 +890,57 @@ impl App {
             TowerKind::Rapid => 70,
             TowerKind::Basic => 90,
         };
+        let from = Vec2i::new(from_x as i16, from_y as i16);
+        let to = Vec2i::new(to_x as i16, to_y as i16);
+        let dir = Vec2i::new((to.x - from.x).signum(), (to.y - from.y).signum());
+
+        let fx_id = self.game.fx.spawn_projectile(
+            kind,
+            from,
+            to,
+            ttl.min(u8::MAX as u16) as u8,
+            self.rand_u32(),
+        );
 
         self.game.projectiles.push(Projectile {
-            x: from_x as i16,
-            y: from_y as i16,
-            tx: to_x as i16,
-            ty: to_y as i16,
+            x: from.x,
+            y: from.y,
+            tx: to.x,
+            ty: to.y,
             ttl,
             damage: dmg,
             step_cd: Self::projectile_step_cd(kind),
             kind,
-            source_level: level,
+            source_level: _level,
+            fx_id,
         });
 
-        // pequeno flash de "muzzle" na torre
-        self.spawn_spark(from_x as i16, from_y as i16);
+        self.game.fx.spawn_muzzle(kind, from, dir, self.rand_u32());
+        if kind == TowerKind::Sniper {
+            self.game.fx.spawn_tracer_line(from, to, self.rand_u32());
+        }
+    }
+
+    fn spawn_impact(&mut self, x: u16, y: u16, kind: TowerKind, _level: u8) {
+        let pos = Vec2i::new(x as i16, y as i16);
+        let seed = self.rand_u32();
         match kind {
-            TowerKind::Sniper => {
-                // Traçante “instantâneo” (dá aquela sensação de tiro pesado).
-                self.spawn_tracer_line(from_x as i16, from_y as i16, to_x as i16, to_y as i16);
-                self.spawn_bolt(from_x as i16, from_y as i16);
-                for _ in 0..2 {
-                    self.spawn_spark(from_x as i16, from_y as i16);
-                }
-            }
-            TowerKind::Rapid => {
-                // Rajada: bastante brilho curto.
-                for _ in 0..2 {
-                    self.spawn_spark(from_x as i16, from_y as i16);
-                }
+            TowerKind::Cannon => {
+                self.game.fx.spawn_impact_ring(pos, seed);
+                self.game.fx.spawn_dust(pos, seed ^ 0xA53C);
+                self.game
+                    .fx
+                    .spawn_camera_impulse(self.rand_i8(-1, 1) as i16, 0);
             }
             TowerKind::Tesla => {
-                let count = 2 + (level / 2).max(1);
-                for _ in 0..count {
-                    self.spawn_arc(from_x as i16, from_y as i16);
-                }
-                self.spawn_bolt(from_x as i16, from_y as i16);
-            }
-            TowerKind::Cannon => {
-                for _ in 0..3 {
-                    self.spawn_smoke(from_x as i16, from_y as i16);
-                }
-                for _ in 0..(2 + level / 2) {
-                    self.spawn_wave_fx(from_x as i16, from_y as i16);
-                }
+                self.game.fx.spawn_target_flash(pos, seed);
             }
             TowerKind::Frost => {
-                for _ in 0..(3 + level / 3) {
-                    self.spawn_shard(from_x as i16, from_y as i16);
-                }
-                self.spawn_frost(from_x as i16, from_y as i16);
+                self.game.fx.spawn_shatter(pos, seed);
             }
-            TowerKind::Basic => {}
-        }
-    }
-
-    fn spawn_trail(&mut self, source: TowerKind, x: i16, y: i16, drift_x: i8, drift_y: i8) {
-        // Trilha depende da torre (dá “identidade” pro tiro).
-        // drift_x/y vem do vetor contrário ao movimento do projétil (pra dar sensação de rastro).
-        let (kind, ttl, vx, vy) = match source {
-            TowerKind::Sniper => (ParticleKind::TrailSniper, 6, 0, 0),
-            TowerKind::Rapid => (
-                ParticleKind::TrailRapid,
-                3,
-                drift_x.saturating_add(self.rand_i8(-1, 1)),
-                drift_y.saturating_add(self.rand_i8(-1, 1)),
-            ),
-            TowerKind::Cannon => (ParticleKind::TrailCannon, 7, 0, self.rand_i8(-1, 0)),
-            TowerKind::Tesla => (ParticleKind::TrailTesla, 4, drift_x, drift_y),
-            TowerKind::Frost => (ParticleKind::TrailFrost, 5, drift_x, drift_y),
-            TowerKind::Basic => (ParticleKind::TrailBasic, 4, drift_x, drift_y),
-        };
-
-        self.game.particles.push(Particle {
-            x,
-            y,
-            vx,
-            vy,
-            ttl,
-            kind,
-        });
-    }
-
-    fn spawn_spark(&mut self, x: i16, y: i16) {
-        // “muzzle flash” mais vivo: mistura de fagulhas curtas e um brilho central.
-        self.game.particles.push(Particle {
-            x,
-            y,
-            vx: 0,
-            vy: 0,
-            ttl: 3,
-            kind: ParticleKind::Bolt,
-        });
-
-        for _ in 0..5 {
-            let vx = self.rand_i8(-2, 2);
-            let vy = self.rand_i8(-2, 2);
-            let ttl = 4 + (self.rand_u32() % 3) as u8;
-            self.game.particles.push(Particle {
-                x,
-                y,
-                vx,
-                vy,
-                ttl,
-                kind: ParticleKind::Spark,
-            });
-        }
-    }
-
-    fn spawn_impact(&mut self, x: u16, y: u16, kind: TowerKind, level: u8) {
-        self.game.impacts.push(ImpactFx { x, y, ttl: 4, kind });
-
-        let ix = x as i16;
-        let iy = y as i16;
-
-        // fagulhas
-        for _ in 0..(6 + level as usize) {
-            let vx = self.rand_i8(-2, 2);
-            let vy = self.rand_i8(-2, 2);
-            self.game.particles.push(Particle {
-                x: ix,
-                y: iy,
-                vx,
-                vy,
-                ttl: 6,
-                kind: ParticleKind::Spark,
-            });
-        }
-
-        // "fumacinha" no ponto de impacto
-        self.spawn_smoke(ix, iy);
-        if kind == TowerKind::Tesla {
-            for _ in 0..(4 + level / 2) {
-                self.spawn_arc(ix, iy);
+            TowerKind::Sniper | TowerKind::Rapid | TowerKind::Basic => {
+                self.game.fx.spawn_impact_cross(pos, kind, seed);
             }
-            for _ in 0..(2 + level / 3) {
-                self.spawn_bolt(ix, iy);
-            }
-        }
-        if kind == TowerKind::Frost {
-            for _ in 0..(4 + level / 2) {
-                self.spawn_shard(ix, iy);
-            }
-            for _ in 0..(2 + level / 3) {
-                self.spawn_frost(ix, iy);
-            }
-        }
-        if kind == TowerKind::Cannon {
-            for _ in 0..(2 + level / 2) {
-                self.spawn_smoke(ix, iy);
-            }
-            for _ in 0..(2 + level / 3) {
-                self.spawn_wave_fx(ix, iy);
-            }
-        }
-    }
-
-    fn spawn_arc(&mut self, x: i16, y: i16) {
-        let vx = self.rand_i8(-2, 2);
-        let vy = self.rand_i8(-1, 1);
-        self.game.particles.push(Particle {
-            x,
-            y,
-            vx,
-            vy,
-            ttl: 5,
-            kind: ParticleKind::Arc,
-        });
-    }
-
-    fn spawn_shard(&mut self, x: i16, y: i16) {
-        let vx = self.rand_i8(-1, 1);
-        let vy = self.rand_i8(-2, 0);
-        self.game.particles.push(Particle {
-            x,
-            y,
-            vx,
-            vy,
-            ttl: 6,
-            kind: ParticleKind::Shard,
-        });
-    }
-
-    fn spawn_bolt(&mut self, x: i16, y: i16) {
-        self.game.particles.push(Particle {
-            x,
-            y,
-            vx: 0,
-            vy: 0,
-            ttl: 4,
-            kind: ParticleKind::Bolt,
-        });
-    }
-
-    fn spawn_frost(&mut self, x: i16, y: i16) {
-        self.game.particles.push(Particle {
-            x,
-            y,
-            vx: 0,
-            vy: 0,
-            ttl: 5,
-            kind: ParticleKind::Frost,
-        });
-    }
-
-    fn spawn_wave_fx(&mut self, x: i16, y: i16) {
-        self.game.particles.push(Particle {
-            x,
-            y,
-            vx: 0,
-            vy: 0,
-            ttl: 4,
-            kind: ParticleKind::Wave,
-        });
-    }
-
-    fn spawn_smoke(&mut self, x: i16, y: i16) {
-        self.game.particles.push(Particle {
-            x,
-            y,
-            vx: 0,
-            vy: 0,
-            ttl: 10,
-            kind: ParticleKind::Smoke,
-        });
-    }
-
-        fn spawn_tracer_line(&mut self, from_x: i16, from_y: i16, to_x: i16, to_y: i16) {
-        // linha de traçante simples no grid (sem geometria cara).
-        // coloca “pontos” intermediários com TTL baixinho pra não poluir.
-        let mut x = from_x;
-        let mut y = from_y;
-        let mut steps = 0;
-        while (x, y) != (to_x, to_y) && steps < 32 {
-            let dx = (to_x - x).signum();
-            let dy = (to_y - y).signum();
-            x += dx;
-            y += dy;
-            steps += 1;
-
-            // evita desenhar por cima do alvo (impact já cobre) e por cima da própria torre.
-            if (x, y) == (from_x, from_y) || (x, y) == (to_x, to_y) {
-                continue;
-            }
-
-            self.game.particles.push(Particle {
-                x,
-                y,
-                vx: 0,
-                vy: 0,
-                ttl: 2,
-                kind: ParticleKind::TrailSniper,
-            });
-        }
-    }
-
-fn spawn_bolt_line(&mut self, from_x: i16, from_y: i16, to_x: i16, to_y: i16) {
-        let dx = to_x - from_x;
-        let dy = to_y - from_y;
-        let steps = dx.abs().max(dy.abs());
-        if steps == 0 {
-            return;
-        }
-        let step_x = dx.signum();
-        let step_y = dy.signum();
-        let mut cx = from_x;
-        let mut cy = from_y;
-        for _ in 0..steps {
-            cx += step_x;
-            cy += step_y;
-            self.spawn_bolt(cx, cy);
         }
     }
 
@@ -1237,8 +973,14 @@ fn spawn_bolt_line(&mut self, from_x: i16, from_y: i16, to_x: i16, to_y: i16) {
                     e.hp = 0;
                 }
             }
-            self.spawn_bolt_line(x as i16, y as i16, ex as i16, ey as i16);
-            self.spawn_arc(ex as i16, ey as i16);
+            self.game.fx.spawn_arc_lightning(
+                Vec2i::new(x as i16, y as i16),
+                Vec2i::new(ex as i16, ey as i16),
+                self.rand_u32(),
+            );
+            self.game
+                .fx
+                .spawn_target_flash(Vec2i::new(ex as i16, ey as i16), self.rand_u32());
         }
     }
 
@@ -1266,15 +1008,15 @@ fn spawn_bolt_line(&mut self, from_x: i16, from_y: i16, to_x: i16, to_y: i16) {
         }
 
         for (fx_x, fx_y) in fx_spawns {
-            self.spawn_wave_fx(fx_x, fx_y);
-            self.spawn_smoke(fx_x, fx_y);
+            let pos = Vec2i::new(fx_x, fx_y);
+            self.game.fx.spawn_dust(pos, self.rand_u32());
         }
     }
 
     fn apply_frost_burst(&mut self, x: u16, y: u16, level: u8) {
         let (radius, slow_percent, slow_ticks) = Self::frost_burst_params(level);
-        let mut fx_spawns: Vec<(i16, i16)> = Vec::new();
-        for e in &mut self.game.enemies {
+        let mut fx_spawns: Vec<(usize, i16, i16)> = Vec::new();
+        for (idx, e) in self.game.enemies.iter_mut().enumerate() {
             if e.hp <= 0 {
                 continue;
             }
@@ -1285,11 +1027,17 @@ fn spawn_bolt_line(&mut self, from_x: i16, from_y: i16, to_x: i16, to_y: i16) {
             }
             e.slow_percent = e.slow_percent.max(slow_percent);
             e.slow_ticks = e.slow_ticks.max(slow_ticks);
-            fx_spawns.push((ex as i16, ey as i16));
+            fx_spawns.push((idx, ex as i16, ey as i16));
         }
 
-        for (fx_x, fx_y) in fx_spawns {
-            self.spawn_frost(fx_x, fx_y);
+        for (idx, fx_x, fx_y) in fx_spawns {
+            let pos = Vec2i::new(fx_x, fx_y);
+            self.game.fx.spawn_shatter(pos, self.rand_u32());
+            self.game.fx.spawn_status_overlay(
+                idx,
+                slow_ticks.min(u8::MAX as u16) as u8,
+                self.rand_u32(),
+            );
         }
     }
 
@@ -1483,8 +1231,7 @@ fn spawn_bolt_line(&mut self, from_x: i16, from_y: i16, to_x: i16, to_y: i16) {
             }],
             enemies: vec![],
             projectiles: vec![],
-            impacts: vec![],
-            particles: vec![],
+            fx: FxManager::new(),
             money_cd: 0,
         };
 

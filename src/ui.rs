@@ -8,7 +8,7 @@ use ratatui::{
 use crate::{
     app::{
         App, ButtonId, HoverAction, LayoutMode, LoadMenuFocus, MapSelectAction, MapSpec,
-        MapViewport, ParticleKind, Screen, TOWER_KIND_COUNT, TowerKind,
+        MapViewport, Screen, TOWER_KIND_COUNT, TowerKind,
     },
     assets,
 };
@@ -588,6 +588,19 @@ fn draw_inspector_panel(f: &mut Frame, app: &mut App, area: Rect) {
         }
     }
 
+    if app.dev_mode {
+        let stats = app.game.fx.stats();
+        let active_total: u16 = stats.active_by_kind.iter().sum();
+        stats_lines.push(Line::from(""));
+        stats_lines.push(Line::from(Span::styled(
+            format!(
+                "FX: active {} | prim {} | budget cut {} | cap cut {}",
+                active_total, stats.primitives_drawn, stats.culled_by_budget, stats.culled_by_kind
+            ),
+            Style::default().fg(text_dim()),
+        )));
+    }
+
     f.render_widget(
         Paragraph::new(stats_lines)
             .wrap(Wrap { trim: true })
@@ -774,6 +787,19 @@ fn draw_compact_info(f: &mut Frame, app: &App, area: Rect) {
         )),
     ];
 
+    let mut txt = txt;
+    if app.dev_mode {
+        let stats = app.game.fx.stats();
+        let active_total: u16 = stats.active_by_kind.iter().sum();
+        txt.push(Line::from(Span::styled(
+            format!(
+                "FX: active {} | prim {} | budget cut {} | cap cut {}",
+                active_total, stats.primitives_drawn, stats.culled_by_budget, stats.culled_by_kind
+            ),
+            Style::default().fg(text_dim()),
+        )));
+    }
+
     f.render_widget(
         Paragraph::new(txt)
             .wrap(Wrap { trim: true })
@@ -925,7 +951,16 @@ struct MapWidget<'a> {
 impl<'a> Widget for MapWidget<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let app = self.app;
-        let vp = app.ui.viewport;
+        let mut vp = app.ui.viewport;
+        let shake = app.game.fx.camera_offset();
+        if shake.x != 0 || shake.y != 0 {
+            let max_x = app.game.grid_w.saturating_sub(vp.vis_w);
+            let max_y = app.game.grid_h.saturating_sub(vp.vis_h);
+            let vx = (vp.view_x as i16 + shake.x).clamp(0, max_x as i16) as u16;
+            let vy = (vp.view_y as i16 + shake.y).clamp(0, max_y as i16) as u16;
+            vp.view_x = vx;
+            vp.view_y = vy;
+        }
 
         if area.width == 0 || area.height == 0 || vp.vis_w == 0 || vp.vis_h == 0 {
             return;
@@ -1044,116 +1079,16 @@ impl<'a> Widget for MapWidget<'a> {
                         .add_modifier(Modifier::BOLD);
                     draw_sprite(buf, tile_x, tile_y, vp.tile_w, vp.tile_h, spr, st);
                 }
-
-                // impacto por cima de tudo
-                if let Some(fx) = app
-                    .game
-                    .impacts
-                    .iter()
-                    .find(|fx| fx.x == cell_x && fx.y == cell_y)
-                {
-                    let spr = assets::impact_sprite(app.ui.zoom);
-                    let base_color = tower_kind_color(fx.kind);
-                    let st = match fx.ttl {
-                        4 => Style::default()
-                            .fg(base_color)
-                            .bg(hl_bg)
-                            .add_modifier(Modifier::BOLD),
-                        3 => Style::default()
-                            .fg(base_color)
-                            .bg(hl_bg)
-                            .add_modifier(Modifier::DIM),
-                        2 => Style::default().fg(Color::DarkGray).bg(hl_bg),
-                        _ => Style::default().fg(text_dim()).bg(hl_bg),
-                    };
-                    draw_sprite(buf, tile_x, tile_y, vp.tile_w, vp.tile_h, spr, st);
-                }
             }
         }
-
-        // projéteis (agora no “meio” do tile em X e Y)
-        for p in &app.game.projectiles {
-            if p.x < 0 || p.y < 0 {
-                continue;
-            }
-            let cx = p.x as u16;
-            let cy = p.y as u16;
-            if cx < vp.view_x || cy < vp.view_y {
-                continue;
-            }
-            let gx = cx - vp.view_x;
-            let gy = cy - vp.view_y;
-            if gx >= vp.vis_w || gy >= vp.vis_h {
-                continue;
-            }
-
-            let tile_x = area.x + gx * vp.tile_w;
-            let tile_y = area.y + gy * vp.tile_h;
-
-            let mid_x = tile_x + (vp.tile_w / 2).min(vp.tile_w.saturating_sub(1));
-            let mid_y = tile_y + (vp.tile_h / 2).min(vp.tile_h.saturating_sub(1));
-
-            let dx = (p.tx - p.x).signum();
-            let dy = (p.ty - p.y).signum();
-
-            let (sym, color) = match p.kind {
-                TowerKind::Sniper => {
-                    // Sniper: traçante direcional.
-                    let s = match (dx, dy) {
-                        (1, 0) | (-1, 0) => assets::GLYPH_TRACER_H,
-                        (0, 1) | (0, -1) => assets::GLYPH_TRACER_V,
-                        (1, 1) | (-1, -1) => assets::GLYPH_TRACER_D1,
-                        (1, -1) | (-1, 1) => assets::GLYPH_TRACER_D2,
-                        _ => assets::GLYPH_PROJECTILE_SNIPER,
-                    };
-                    (s, Color::LightCyan)
-                }
-                TowerKind::Rapid => (assets::GLYPH_PROJECTILE_RAPID, Color::Yellow),
-                TowerKind::Cannon => (assets::GLYPH_PROJECTILE_CANNON, Color::LightRed),
-                TowerKind::Tesla => (assets::GLYPH_PROJECTILE_TESLA, Color::LightBlue),
-                TowerKind::Frost => (assets::GLYPH_PROJECTILE_FROST, Color::LightBlue),
-                TowerKind::Basic => (assets::GLYPH_PROJECTILE_BASIC, Color::LightMagenta),
-            };
-
-            if mid_x < area.right() && mid_y < area.bottom() {
-                if let Some(cell) = buf.cell_mut((mid_x, mid_y)) {
-                    let style = cell.style().fg(color).add_modifier(Modifier::BOLD);
-                    cell.set_symbol(sym).set_style(style);
-                }
-            }
-        }
-
-        // partículas (também centralizadas em X/Y)
-        for p in &app.game.particles {
-            if p.x < 0 || p.y < 0 {
-                continue;
-            }
-            let cx = p.x as u16;
-            let cy = p.y as u16;
-            if cx < vp.view_x || cy < vp.view_y {
-                continue;
-            }
-            let gx = cx - vp.view_x;
-            let gy = cy - vp.view_y;
-            if gx >= vp.vis_w || gy >= vp.vis_h {
-                continue;
-            }
-
-            let tile_x = area.x + gx * vp.tile_w;
-            let tile_y = area.y + gy * vp.tile_h;
-
-            let mid_x = tile_x + (vp.tile_w / 2).min(vp.tile_w.saturating_sub(1));
-            let mid_y = tile_y + (vp.tile_h / 2).min(vp.tile_h.saturating_sub(1));
-
-            let (sym, color, modifier) = particle_visual(p.kind, p.ttl);
-
-            if mid_x < area.right() && mid_y < area.bottom() {
-                if let Some(cell) = buf.cell_mut((mid_x, mid_y)) {
-                    let style = cell.style().fg(color).add_modifier(modifier);
-                    cell.set_symbol(sym).set_style(style);
-                }
-            }
-        }
+        app.game.fx.render(
+            buf,
+            area,
+            vp,
+            app.ui.zoom,
+            &app.game.enemies,
+            &app.game.path,
+        );
     }
 }
 
@@ -1517,74 +1452,74 @@ impl<'a> Widget for MapPreviewWidget<'a> {
 
         #[cfg(any())]
         {
-        let z = self.zoom.max(1);
-        let tile_w = 4 * z;
-        let tile_h = 4 * z;
+            let z = self.zoom.max(1);
+            let tile_w = 4 * z;
+            let tile_h = 4 * z;
 
-        let vis_w = (area.width / tile_w).max(1).min(self.map.grid_w);
-        let vis_h = (area.height / tile_h).max(1).min(self.map.grid_h);
+            let vis_w = (area.width / tile_w).max(1).min(self.map.grid_w);
+            let vis_h = (area.height / tile_h).max(1).min(self.map.grid_h);
 
-        let view_x = self.map.grid_w.saturating_sub(vis_w) / 2;
-        let view_y = self.map.grid_h.saturating_sub(vis_h) / 2;
+            let view_x = self.map.grid_w.saturating_sub(vis_w) / 2;
+            let view_y = self.map.grid_h.saturating_sub(vis_h) / 2;
 
-        let goal = self.map.path.last().copied();
+            let goal = self.map.path.last().copied();
 
-        // fundo
-        for y in area.top()..area.bottom() {
-            for x in area.left()..area.right() {
-                if let Some(cell) = buf.cell_mut((x, y)) {
-                    cell.set_symbol(" ")
-                        .set_style(Style::default().bg(map_bg(z)));
+            // fundo
+            for y in area.top()..area.bottom() {
+                for x in area.left()..area.right() {
+                    if let Some(cell) = buf.cell_mut((x, y)) {
+                        cell.set_symbol(" ")
+                            .set_style(Style::default().bg(map_bg(z)));
+                    }
                 }
             }
-        }
 
-        for gy in 0..vis_h {
-            for gx in 0..vis_w {
-                let cell_x = view_x + gx;
-                let cell_y = view_y + gy;
+            for gy in 0..vis_h {
+                for gx in 0..vis_w {
+                    let cell_x = view_x + gx;
+                    let cell_y = view_y + gy;
 
-                let tile_x = area.x + gx * tile_w;
-                let tile_y = area.y + gy * tile_h;
+                    let tile_x = area.x + gx * tile_w;
+                    let tile_y = area.y + gy * tile_h;
 
-                let is_goal = goal == Some((cell_x, cell_y));
-                let is_path = self
-                    .map
-                    .path
-                    .iter()
-                    .any(|&(px, py)| px == cell_x && py == cell_y);
+                    let is_goal = goal == Some((cell_x, cell_y));
+                    let is_path = self
+                        .map
+                        .path
+                        .iter()
+                        .any(|&(px, py)| px == cell_x && py == cell_y);
 
-                let base_bg = tile_bg(z, is_path, is_goal);
+                    let base_bg = tile_bg(z, is_path, is_goal);
 
-                for dy in 0..tile_h {
-                    for dx in 0..tile_w {
-                        let (sym, fg) = if is_goal {
-                            let cx = tile_w / 2;
-                            let cy = tile_h / 2;
-                            if dx == cx && dy == cy {
-                                ("◎", Color::LightMagenta)
+                    for dy in 0..tile_h {
+                        for dx in 0..tile_w {
+                            let (sym, fg) = if is_goal {
+                                let cx = tile_w / 2;
+                                let cy = tile_h / 2;
+                                if dx == cx && dy == cy {
+                                    ("◎", Color::LightMagenta)
+                                } else {
+                                    ("▓", Color::Magenta)
+                                }
+                            } else if is_path {
+                                ("▚", Color::LightYellow)
                             } else {
-                                ("▓", Color::Magenta)
-                            }
-                        } else if is_path {
-                            ("▚", Color::LightYellow)
-                        } else {
-                            let k = tex_pick(cell_x, cell_y, dx, dy, 0x1234_u32, 5);
-                            ([" ", "·", "˙", "·", " "][k as usize], Color::Green)
-                        };
+                                let k = tex_pick(cell_x, cell_y, dx, dy, 0x1234_u32, 5);
+                                ([" ", "·", "˙", "·", " "][k as usize], Color::Green)
+                            };
 
-                        let x = tile_x + dx;
-                        let y = tile_y + dy;
-                        if x < area.right() && y < area.bottom() {
-                            if let Some(cell) = buf.cell_mut((x, y)) {
-                                cell.set_symbol(sym)
-                                    .set_style(Style::default().fg(fg).bg(base_bg));
+                            let x = tile_x + dx;
+                            let y = tile_y + dy;
+                            if x < area.right() && y < area.bottom() {
+                                if let Some(cell) = buf.cell_mut((x, y)) {
+                                    cell.set_symbol(sym)
+                                        .set_style(Style::default().fg(fg).bg(base_bg));
+                                }
                             }
                         }
                     }
                 }
             }
-        }
         }
 
         // Preview do mapa precisa sempre caber na tela. Aqui renderiza um minimap
@@ -1684,33 +1619,6 @@ impl<'a> Widget for MapPreviewWidget<'a> {
                 }
             }
         }
-    }
-}
-
-fn particle_visual(kind: ParticleKind, ttl: u8) -> (&'static str, Color, Modifier) {
-    let t = ttl.max(1).min(6) as usize;
-    // idx: ttl alto -> mais forte/cheio
-    let idx = 6 - t;
-
-    match kind {
-        ParticleKind::TrailBasic => (assets::TRAIL_BASIC[idx], Color::LightMagenta, Modifier::empty()),
-        ParticleKind::TrailSniper => (assets::TRAIL_SNIPER[idx], Color::LightCyan, Modifier::BOLD),
-        ParticleKind::TrailRapid => (assets::TRAIL_RAPID[idx], Color::Yellow, Modifier::empty()),
-        ParticleKind::TrailCannon => (assets::TRAIL_CANNON[idx], Color::LightRed, Modifier::empty()),
-        ParticleKind::TrailTesla => (assets::TRAIL_TESLA[idx], Color::LightBlue, Modifier::BOLD),
-        ParticleKind::TrailFrost => (assets::TRAIL_FROST[idx], Color::Cyan, Modifier::empty()),
-
-        ParticleKind::Spark => (
-            assets::SPARK[idx.min(3)],
-            if ttl >= 4 { warn() } else { Color::Yellow },
-            Modifier::BOLD,
-        ),
-        ParticleKind::Smoke => (assets::SMOKE[idx.min(3)], text_dim(), Modifier::empty()),
-        ParticleKind::Arc => (assets::ARC[idx.min(3)], Color::LightBlue, Modifier::BOLD),
-        ParticleKind::Shard => (assets::SHARD[idx.min(3)], Color::LightBlue, Modifier::empty()),
-        ParticleKind::Bolt => (assets::BOLT[idx.min(3)], Color::LightBlue, Modifier::BOLD),
-        ParticleKind::Frost => (assets::FROST[idx.min(3)], Color::Cyan, Modifier::empty()),
-        ParticleKind::Wave => (assets::WAVE[idx.min(3)], Color::LightRed, Modifier::BOLD),
     }
 }
 
