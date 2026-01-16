@@ -60,7 +60,7 @@ fn good() -> Color {
 #[inline]
 fn map_bg(zoom: u16) -> Color {
     match zoom {
-        1 => Color::Rgb(8, 22, 10),
+        0 | 1 => Color::Rgb(8, 22, 10),
         2 => Color::Rgb(12, 28, 12),
         3 => Color::Rgb(16, 34, 16),
         _ => Color::Rgb(20, 40, 20),
@@ -70,7 +70,7 @@ fn map_bg(zoom: u16) -> Color {
 #[inline]
 fn path_bg(zoom: u16) -> Color {
     match zoom {
-        1 => Color::Rgb(20, 20, 10),
+        0 | 1 => Color::Rgb(20, 20, 10),
         2 => Color::Rgb(26, 26, 12),
         3 => Color::Rgb(32, 32, 14),
         _ => Color::Rgb(38, 38, 16),
@@ -80,7 +80,7 @@ fn path_bg(zoom: u16) -> Color {
 #[inline]
 fn goal_bg(zoom: u16) -> Color {
     match zoom {
-        1 => Color::Rgb(20, 12, 26),
+        0 | 1 => Color::Rgb(20, 12, 26),
         2 => Color::Rgb(26, 16, 32),
         3 => Color::Rgb(32, 20, 38),
         _ => Color::Rgb(38, 24, 44),
@@ -346,9 +346,10 @@ fn draw_map_panel(f: &mut Frame, app: &mut App, area: Rect) {
 fn compute_viewport(app: &mut App, inner: Rect) -> MapViewport {
     let mut vp = MapViewport::default();
 
-    let z = app.ui.zoom.max(1);
-    vp.tile_w = 2 * z;
-    vp.tile_h = z;
+    let z = app.ui.zoom;
+    let tile = if z == 0 { 2 } else { 4 * z };
+    vp.tile_w = tile;
+    vp.tile_h = tile;
 
     vp.vis_w = (inner.width / vp.tile_w).max(1).min(app.game.grid_w);
     vp.vis_h = (inner.height / vp.tile_h).max(1).min(app.game.grid_h);
@@ -979,15 +980,15 @@ impl<'a> Widget for MapWidget<'a> {
                                 ("◎", Color::LightMagenta)
                             } else {
                                 let k = tex_pick(cell_x, cell_y, dx, dy, 0xBEEF_u32, 3);
-                                (["▒", "▓", "▒"][k as usize], Color::Magenta)
+                                (["░", "▒", "▓"][k as usize], Color::Magenta)
                             }
                         } else if is_path {
                             let k = tex_pick(cell_x, cell_y, dx, dy, 0xCAFE_u32, 5);
-                            ([" ", "▚", "▞", "▚", " "][k as usize], Color::LightYellow)
+                            (["·", "░", "▒", "░", "·"][k as usize], Color::LightYellow)
                         } else {
                             let k = tex_pick(cell_x, cell_y, dx, dy, 0x1234_u32, 7);
                             (
-                                [" ", " ", "▗", "▖", "▝", "▘", " "][k as usize],
+                                [" ", "·", "˙", "✿", "˙", "·", " "][k as usize],
                                 Color::Green,
                             )
                         };
@@ -1092,13 +1093,26 @@ impl<'a> Widget for MapWidget<'a> {
             let mid_x = tile_x + (vp.tile_w / 2).min(vp.tile_w.saturating_sub(1));
             let mid_y = tile_y + (vp.tile_h / 2).min(vp.tile_h.saturating_sub(1));
 
+            let dx = (p.tx - p.x).signum();
+            let dy = (p.ty - p.y).signum();
+
             let (sym, color) = match p.kind {
-                TowerKind::Basic => (assets::GLYPH_PROJECTILE_BASIC, Color::LightMagenta),
-                TowerKind::Sniper => (assets::GLYPH_PROJECTILE_SNIPER, Color::LightCyan),
+                TowerKind::Sniper => {
+                    // Sniper: traçante direcional.
+                    let s = match (dx, dy) {
+                        (1, 0) | (-1, 0) => assets::GLYPH_TRACER_H,
+                        (0, 1) | (0, -1) => assets::GLYPH_TRACER_V,
+                        (1, 1) | (-1, -1) => assets::GLYPH_TRACER_D1,
+                        (1, -1) | (-1, 1) => assets::GLYPH_TRACER_D2,
+                        _ => assets::GLYPH_PROJECTILE_SNIPER,
+                    };
+                    (s, Color::LightCyan)
+                }
                 TowerKind::Rapid => (assets::GLYPH_PROJECTILE_RAPID, Color::Yellow),
                 TowerKind::Cannon => (assets::GLYPH_PROJECTILE_CANNON, Color::LightRed),
                 TowerKind::Tesla => (assets::GLYPH_PROJECTILE_TESLA, Color::LightBlue),
                 TowerKind::Frost => (assets::GLYPH_PROJECTILE_FROST, Color::LightBlue),
+                TowerKind::Basic => (assets::GLYPH_PROJECTILE_BASIC, Color::LightMagenta),
             };
 
             if mid_x < area.right() && mid_y < area.bottom() {
@@ -1393,7 +1407,6 @@ fn draw_map_select(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(
         MapPreviewWidget {
             map: app.selected_map(),
-            zoom: app.ui.zoom,
         },
         inner,
     );
@@ -1494,7 +1507,6 @@ fn draw_map_select(f: &mut Frame, app: &mut App, area: Rect) {
 
 struct MapPreviewWidget<'a> {
     map: &'a MapSpec,
-    zoom: u16,
 }
 
 impl<'a> Widget for MapPreviewWidget<'a> {
@@ -1503,9 +1515,11 @@ impl<'a> Widget for MapPreviewWidget<'a> {
             return;
         }
 
+        #[cfg(any())]
+        {
         let z = self.zoom.max(1);
-        let tile_w = 2 * z;
-        let tile_h = z;
+        let tile_w = 4 * z;
+        let tile_h = 4 * z;
 
         let vis_w = (area.width / tile_w).max(1).min(self.map.grid_w);
         let vis_h = (area.height / tile_h).max(1).min(self.map.grid_h);
@@ -1556,7 +1570,7 @@ impl<'a> Widget for MapPreviewWidget<'a> {
                             ("▚", Color::LightYellow)
                         } else {
                             let k = tex_pick(cell_x, cell_y, dx, dy, 0x1234_u32, 5);
-                            ([" ", "▗", "▖", "▝", "▘"][k as usize], Color::Green)
+                            ([" ", "·", "˙", "·", " "][k as usize], Color::Green)
                         };
 
                         let x = tile_x + dx;
@@ -1571,26 +1585,132 @@ impl<'a> Widget for MapPreviewWidget<'a> {
                 }
             }
         }
+        }
+
+        // Preview do mapa precisa sempre caber na tela. Aqui renderiza um minimap
+        // do formato do caminho (o que importa na seleção), escalando para `area`.
+        let map_w = self.map.grid_w.max(1);
+        let map_h = self.map.grid_h.max(1);
+
+        // Mantém aspecto aproximado do grid (sem distorcer demais).
+        let mut draw_w = area.width.max(1);
+        let mut draw_h = area.height.max(1);
+        // tenta usar a largura toda; se estourar altura, ajusta pela altura
+        let fit_h = ((draw_w as u32 * map_h as u32) / map_w as u32).max(1) as u16;
+        if fit_h <= draw_h {
+            draw_h = fit_h;
+        } else {
+            draw_w = ((draw_h as u32 * map_w as u32) / map_h as u32).max(1) as u16;
+        }
+
+        draw_w = draw_w.min(area.width).max(1);
+        draw_h = draw_h.min(area.height).max(1);
+
+        let off_x = area.x + (area.width.saturating_sub(draw_w) / 2);
+        let off_y = area.y + (area.height.saturating_sub(draw_h) / 2);
+
+        let z = 1u16;
+        let start = self.map.path.first().copied();
+        let goal = self.map.path.last().copied();
+
+        // fundo
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_symbol(" ")
+                        .set_style(Style::default().bg(map_bg(z)));
+                }
+            }
+        }
+
+        // Pré-computa máscara do caminho no grid (barato: no máx ~80*40).
+        let map_w_usize = map_w as usize;
+        let map_h_usize = map_h as usize;
+        let mut is_path_cell = vec![false; map_w_usize.saturating_mul(map_h_usize)];
+        for &(x, y) in &self.map.path {
+            if x < map_w && y < map_h {
+                is_path_cell[y as usize * map_w_usize + x as usize] = true;
+            }
+        }
+
+        // Renderiza 1 caractere por "pixel" do minimap.
+        let dw = draw_w as u32;
+        let dh = draw_h as u32;
+        let mw = map_w as u32;
+        let mh = map_h as u32;
+
+        for sy in 0..draw_h {
+            for sx in 0..draw_w {
+                // região no grid que este pixel cobre (usa ceil para nunca dar range vazio)
+                let mx0 = (sx as u32 * mw) / dw;
+                let my0 = (sy as u32 * mh) / dh;
+                let mx1 = (((sx as u32 + 1) * mw + dw - 1) / dw).min(mw);
+                let my1 = (((sy as u32 + 1) * mh + dh - 1) / dh).min(mh);
+
+                let mut has_path = false;
+                let mut has_start = false;
+                let mut has_goal = false;
+                for my in my0..my1 {
+                    for mx in mx0..mx1 {
+                        let cell = (mx as u16, my as u16);
+                        if start == Some(cell) {
+                            has_start = true;
+                        }
+                        if goal == Some(cell) {
+                            has_goal = true;
+                        }
+                        let idx = my as usize * map_w_usize + mx as usize;
+                        if is_path_cell.get(idx).copied().unwrap_or(false) {
+                            has_path = true;
+                        }
+                    }
+                }
+
+                let (sym, fg, bgc) = if has_goal {
+                    ("G", Color::LightMagenta, goal_bg(z))
+                } else if has_start {
+                    ("S", Color::LightGreen, path_bg(z))
+                } else if has_path {
+                    ("█", Color::LightYellow, path_bg(z))
+                } else {
+                    (" ", Color::Reset, map_bg(z))
+                };
+
+                let x = off_x + sx;
+                let y = off_y + sy;
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_symbol(sym)
+                        .set_style(Style::default().fg(fg).bg(bgc));
+                }
+            }
+        }
     }
 }
 
 fn particle_visual(kind: ParticleKind, ttl: u8) -> (&'static str, Color, Modifier) {
-    let t = ttl.max(1).min(4) as usize;
-    let idx = 4 - t; // ttl 4 -> idx0 (forte), ttl 1 -> idx3 (fraco)
+    let t = ttl.max(1).min(6) as usize;
+    // idx: ttl alto -> mais forte/cheio
+    let idx = 6 - t;
 
     match kind {
-        ParticleKind::Trail => (assets::TRAIL[idx], Color::LightMagenta, Modifier::empty()),
+        ParticleKind::TrailBasic => (assets::TRAIL_BASIC[idx], Color::LightMagenta, Modifier::empty()),
+        ParticleKind::TrailSniper => (assets::TRAIL_SNIPER[idx], Color::LightCyan, Modifier::BOLD),
+        ParticleKind::TrailRapid => (assets::TRAIL_RAPID[idx], Color::Yellow, Modifier::empty()),
+        ParticleKind::TrailCannon => (assets::TRAIL_CANNON[idx], Color::LightRed, Modifier::empty()),
+        ParticleKind::TrailTesla => (assets::TRAIL_TESLA[idx], Color::LightBlue, Modifier::BOLD),
+        ParticleKind::TrailFrost => (assets::TRAIL_FROST[idx], Color::Cyan, Modifier::empty()),
+
         ParticleKind::Spark => (
-            assets::SPARK[idx],
-            if ttl >= 3 { warn() } else { Color::Yellow },
+            assets::SPARK[idx.min(3)],
+            if ttl >= 4 { warn() } else { Color::Yellow },
             Modifier::BOLD,
         ),
-        ParticleKind::Smoke => (assets::SMOKE[idx], text_dim(), Modifier::empty()),
-        ParticleKind::Arc => (assets::ARC[idx], Color::LightBlue, Modifier::BOLD),
-        ParticleKind::Shard => (assets::SHARD[idx], Color::LightBlue, Modifier::empty()),
-        ParticleKind::Bolt => (assets::BOLT[idx], Color::LightBlue, Modifier::BOLD),
-        ParticleKind::Frost => (assets::FROST[idx], Color::Cyan, Modifier::empty()),
-        ParticleKind::Wave => (assets::WAVE[idx], Color::LightRed, Modifier::BOLD),
+        ParticleKind::Smoke => (assets::SMOKE[idx.min(3)], text_dim(), Modifier::empty()),
+        ParticleKind::Arc => (assets::ARC[idx.min(3)], Color::LightBlue, Modifier::BOLD),
+        ParticleKind::Shard => (assets::SHARD[idx.min(3)], Color::LightBlue, Modifier::empty()),
+        ParticleKind::Bolt => (assets::BOLT[idx.min(3)], Color::LightBlue, Modifier::BOLD),
+        ParticleKind::Frost => (assets::FROST[idx.min(3)], Color::Cyan, Modifier::empty()),
+        ParticleKind::Wave => (assets::WAVE[idx.min(3)], Color::LightRed, Modifier::BOLD),
     }
 }
 

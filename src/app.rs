@@ -163,7 +163,12 @@ pub struct Projectile {
 
 #[derive(Debug, Clone, Copy)]
 pub enum ParticleKind {
-    Trail,
+    TrailBasic,
+    TrailSniper,
+    TrailRapid,
+    TrailCannon,
+    TrailTesla,
+    TrailFrost,
     Spark,
     Smoke,
     Arc,
@@ -299,8 +304,8 @@ impl App {
                 hover_map_select: None,
                 hit: UiHitboxes::default(),
                 viewport: MapViewport::default(),
-                zoom: 2,
-                last_zoom: 2, // <-- NOVO
+                zoom: 1,
+                last_zoom: 1, // <-- NOVO
                 manual_pan: false,
                 drag_origin: None,
                 drag_view: None,
@@ -721,7 +726,7 @@ impl App {
 
     fn tick_projectiles(&mut self) {
         let sp = self.game.speed.max(1) as u16;
-        let mut trails: Vec<(i16, i16)> = Vec::new();
+        let mut trails: Vec<(i16, i16, TowerKind, i8, i8)> = Vec::new();
         let mut impacts: Vec<(u16, u16, TowerKind, u8)> = Vec::new();
         let mut on_hits: Vec<(TowerKind, u16, u16, i32, u8)> = Vec::new();
 
@@ -749,7 +754,7 @@ impl App {
             p.y += dy;
 
             // trail
-            trails.push((old_x, old_y));
+            trails.push((old_x, old_y, p.kind, (-dx) as i8, (-dy) as i8));
 
             if p.x == p.tx && p.y == p.ty {
                 let hit_x = p.x.max(0) as u16;
@@ -793,8 +798,8 @@ impl App {
             }
         }
 
-        for (x, y) in trails {
-            self.spawn_trail(x, y);
+        for (x, y, kind, dvx, dvy) in trails {
+            self.spawn_trail(kind, x, y, dvx, dvy);
         }
         for (x, y, kind, level) in impacts {
             self.spawn_impact(x, y, kind, level);
@@ -946,52 +951,93 @@ impl App {
         // pequeno flash de "muzzle" na torre
         self.spawn_spark(from_x as i16, from_y as i16);
         match kind {
+            TowerKind::Sniper => {
+                // Traçante “instantâneo” (dá aquela sensação de tiro pesado).
+                self.spawn_tracer_line(from_x as i16, from_y as i16, to_x as i16, to_y as i16);
+                self.spawn_bolt(from_x as i16, from_y as i16);
+                for _ in 0..2 {
+                    self.spawn_spark(from_x as i16, from_y as i16);
+                }
+            }
+            TowerKind::Rapid => {
+                // Rajada: bastante brilho curto.
+                for _ in 0..2 {
+                    self.spawn_spark(from_x as i16, from_y as i16);
+                }
+            }
             TowerKind::Tesla => {
-                let count = 1 + (level / 2).max(1);
+                let count = 2 + (level / 2).max(1);
                 for _ in 0..count {
                     self.spawn_arc(from_x as i16, from_y as i16);
                 }
+                self.spawn_bolt(from_x as i16, from_y as i16);
             }
             TowerKind::Cannon => {
-                for _ in 0..2 {
+                for _ in 0..3 {
                     self.spawn_smoke(from_x as i16, from_y as i16);
                 }
-                for _ in 0..(1 + level / 2) {
+                for _ in 0..(2 + level / 2) {
                     self.spawn_wave_fx(from_x as i16, from_y as i16);
                 }
             }
             TowerKind::Frost => {
-                for _ in 0..(2 + level / 3) {
+                for _ in 0..(3 + level / 3) {
                     self.spawn_shard(from_x as i16, from_y as i16);
                 }
                 self.spawn_frost(from_x as i16, from_y as i16);
             }
-            _ => {}
+            TowerKind::Basic => {}
         }
     }
 
-    fn spawn_trail(&mut self, x: i16, y: i16) {
+    fn spawn_trail(&mut self, source: TowerKind, x: i16, y: i16, drift_x: i8, drift_y: i8) {
+        // Trilha depende da torre (dá “identidade” pro tiro).
+        // drift_x/y vem do vetor contrário ao movimento do projétil (pra dar sensação de rastro).
+        let (kind, ttl, vx, vy) = match source {
+            TowerKind::Sniper => (ParticleKind::TrailSniper, 6, 0, 0),
+            TowerKind::Rapid => (
+                ParticleKind::TrailRapid,
+                3,
+                drift_x.saturating_add(self.rand_i8(-1, 1)),
+                drift_y.saturating_add(self.rand_i8(-1, 1)),
+            ),
+            TowerKind::Cannon => (ParticleKind::TrailCannon, 7, 0, self.rand_i8(-1, 0)),
+            TowerKind::Tesla => (ParticleKind::TrailTesla, 4, drift_x, drift_y),
+            TowerKind::Frost => (ParticleKind::TrailFrost, 5, drift_x, drift_y),
+            TowerKind::Basic => (ParticleKind::TrailBasic, 4, drift_x, drift_y),
+        };
+
+        self.game.particles.push(Particle {
+            x,
+            y,
+            vx,
+            vy,
+            ttl,
+            kind,
+        });
+    }
+
+    fn spawn_spark(&mut self, x: i16, y: i16) {
+        // “muzzle flash” mais vivo: mistura de fagulhas curtas e um brilho central.
         self.game.particles.push(Particle {
             x,
             y,
             vx: 0,
             vy: 0,
-            ttl: 4,
-            kind: ParticleKind::Trail,
+            ttl: 3,
+            kind: ParticleKind::Bolt,
         });
-    }
 
-    fn spawn_spark(&mut self, x: i16, y: i16) {
-        // fagulhas curtinhas (pequeno espalhamento)
-        for _ in 0..3 {
-            let vx = self.rand_i8(-1, 1);
-            let vy = self.rand_i8(-1, 1);
+        for _ in 0..5 {
+            let vx = self.rand_i8(-2, 2);
+            let vy = self.rand_i8(-2, 2);
+            let ttl = 4 + (self.rand_u32() % 3) as u8;
             self.game.particles.push(Particle {
                 x,
                 y,
                 vx,
                 vy,
-                ttl: 5,
+                ttl,
                 kind: ParticleKind::Spark,
             });
         }
@@ -1115,7 +1161,36 @@ impl App {
         });
     }
 
-    fn spawn_bolt_line(&mut self, from_x: i16, from_y: i16, to_x: i16, to_y: i16) {
+        fn spawn_tracer_line(&mut self, from_x: i16, from_y: i16, to_x: i16, to_y: i16) {
+        // linha de traçante simples no grid (sem geometria cara).
+        // coloca “pontos” intermediários com TTL baixinho pra não poluir.
+        let mut x = from_x;
+        let mut y = from_y;
+        let mut steps = 0;
+        while (x, y) != (to_x, to_y) && steps < 32 {
+            let dx = (to_x - x).signum();
+            let dy = (to_y - y).signum();
+            x += dx;
+            y += dy;
+            steps += 1;
+
+            // evita desenhar por cima do alvo (impact já cobre) e por cima da própria torre.
+            if (x, y) == (from_x, from_y) || (x, y) == (to_x, to_y) {
+                continue;
+            }
+
+            self.game.particles.push(Particle {
+                x,
+                y,
+                vx: 0,
+                vy: 0,
+                ttl: 2,
+                kind: ParticleKind::TrailSniper,
+            });
+        }
+    }
+
+fn spawn_bolt_line(&mut self, from_x: i16, from_y: i16, to_x: i16, to_y: i16) {
         let dx = to_x - from_x;
         let dy = to_y - from_y;
         let steps = dx.abs().max(dy.abs());
@@ -1348,7 +1423,7 @@ impl App {
     }
 
     pub fn cycle_zoom(&mut self, delta: i16) {
-        let next = (self.ui.zoom as i16 + delta).clamp(1, 4) as u16;
+        let next = (self.ui.zoom as i16 + delta).clamp(0, 4) as u16;
         self.ui.zoom = next;
     }
 
@@ -1708,12 +1783,13 @@ impl App {
     }
 
     fn map_serpentine() -> MapSpec {
-        let grid_w = 36;
-        let grid_h = 18;
+        // Mais “respirado” pra sprites grandes (4x4+).
+        let grid_w = 60;
+        let grid_h = 30;
         let mut path = Vec::new();
-        Self::push_segment(&mut path, (1, 3), (grid_w - 2, 3));
-        Self::push_segment(&mut path, (grid_w - 2, 3), (grid_w - 2, grid_h - 3));
-        Self::push_segment(&mut path, (grid_w - 2, grid_h - 3), (2, grid_h - 3));
+        Self::push_segment(&mut path, (1, 5), (grid_w - 2, 5));
+        Self::push_segment(&mut path, (grid_w - 2, 5), (grid_w - 2, grid_h - 5));
+        Self::push_segment(&mut path, (grid_w - 2, grid_h - 5), (2, grid_h - 5));
         MapSpec {
             name: "Serpentine",
             grid_w,
@@ -1723,14 +1799,14 @@ impl App {
     }
 
     fn map_cascade() -> MapSpec {
-        let grid_w = 44;
-        let grid_h = 22;
+        let grid_w = 72;
+        let grid_h = 36;
         let mut path = Vec::new();
-        Self::push_segment(&mut path, (1, 2), (grid_w - 3, 2));
-        Self::push_segment(&mut path, (grid_w - 3, 2), (grid_w - 3, 10));
-        Self::push_segment(&mut path, (grid_w - 3, 10), (3, 10));
-        Self::push_segment(&mut path, (3, 10), (3, grid_h - 3));
-        Self::push_segment(&mut path, (3, grid_h - 3), (grid_w - 2, grid_h - 3));
+        Self::push_segment(&mut path, (1, 4), (grid_w - 3, 4));
+        Self::push_segment(&mut path, (grid_w - 3, 4), (grid_w - 3, 16));
+        Self::push_segment(&mut path, (grid_w - 3, 16), (4, 16));
+        Self::push_segment(&mut path, (4, 16), (4, grid_h - 5));
+        Self::push_segment(&mut path, (4, grid_h - 5), (grid_w - 2, grid_h - 5));
         MapSpec {
             name: "Cascade",
             grid_w,
@@ -1740,16 +1816,16 @@ impl App {
     }
 
     fn map_spiral() -> MapSpec {
-        let grid_w = 50;
-        let grid_h = 24;
+        let grid_w = 80;
+        let grid_h = 40;
         let mut path = Vec::new();
-        Self::push_segment(&mut path, (1, 3), (grid_w - 2, 3));
-        Self::push_segment(&mut path, (grid_w - 2, 3), (grid_w - 2, grid_h - 4));
-        Self::push_segment(&mut path, (grid_w - 2, grid_h - 4), (3, grid_h - 4));
-        Self::push_segment(&mut path, (3, grid_h - 4), (3, 6));
-        Self::push_segment(&mut path, (3, 6), (grid_w - 4, 6));
-        Self::push_segment(&mut path, (grid_w - 4, 6), (grid_w - 4, grid_h - 6));
-        Self::push_segment(&mut path, (grid_w - 4, grid_h - 6), (6, grid_h - 6));
+        Self::push_segment(&mut path, (1, 6), (grid_w - 2, 6));
+        Self::push_segment(&mut path, (grid_w - 2, 6), (grid_w - 2, grid_h - 6));
+        Self::push_segment(&mut path, (grid_w - 2, grid_h - 6), (6, grid_h - 6));
+        Self::push_segment(&mut path, (6, grid_h - 6), (6, 10));
+        Self::push_segment(&mut path, (6, 10), (grid_w - 8, 10));
+        Self::push_segment(&mut path, (grid_w - 8, 10), (grid_w - 8, grid_h - 10));
+        Self::push_segment(&mut path, (grid_w - 8, grid_h - 10), (12, grid_h - 10));
         MapSpec {
             name: "Spiral",
             grid_w,
@@ -1759,16 +1835,16 @@ impl App {
     }
 
     fn map_switchback() -> MapSpec {
-        let grid_w = 46;
-        let grid_h = 20;
+        let grid_w = 70;
+        let grid_h = 34;
         let mut path = Vec::new();
-        Self::push_segment(&mut path, (1, 4), (grid_w - 2, 4));
-        Self::push_segment(&mut path, (grid_w - 2, 4), (grid_w - 2, 8));
-        Self::push_segment(&mut path, (grid_w - 2, 8), (2, 8));
-        Self::push_segment(&mut path, (2, 8), (2, 12));
-        Self::push_segment(&mut path, (2, 12), (grid_w - 3, 12));
-        Self::push_segment(&mut path, (grid_w - 3, 12), (grid_w - 3, grid_h - 3));
-        Self::push_segment(&mut path, (grid_w - 3, grid_h - 3), (6, grid_h - 3));
+        Self::push_segment(&mut path, (1, 6), (grid_w - 2, 6));
+        Self::push_segment(&mut path, (grid_w - 2, 6), (grid_w - 2, 12));
+        Self::push_segment(&mut path, (grid_w - 2, 12), (3, 12));
+        Self::push_segment(&mut path, (3, 12), (3, 18));
+        Self::push_segment(&mut path, (3, 18), (grid_w - 4, 18));
+        Self::push_segment(&mut path, (grid_w - 4, 18), (grid_w - 4, grid_h - 5));
+        Self::push_segment(&mut path, (grid_w - 4, grid_h - 5), (8, grid_h - 5));
         MapSpec {
             name: "Switchback",
             grid_w,
@@ -1778,16 +1854,16 @@ impl App {
     }
 
     fn map_crosswind() -> MapSpec {
-        let grid_w = 48;
-        let grid_h = 22;
+        let grid_w = 74;
+        let grid_h = 36;
         let mut path = Vec::new();
-        Self::push_segment(&mut path, (1, 3), (grid_w - 2, 3));
-        Self::push_segment(&mut path, (grid_w - 2, 3), (grid_w - 2, 7));
-        Self::push_segment(&mut path, (grid_w - 2, 7), (4, 7));
-        Self::push_segment(&mut path, (4, 7), (4, 15));
-        Self::push_segment(&mut path, (4, 15), (grid_w - 4, 15));
-        Self::push_segment(&mut path, (grid_w - 4, 15), (grid_w - 4, grid_h - 3));
-        Self::push_segment(&mut path, (grid_w - 4, grid_h - 3), (2, grid_h - 3));
+        Self::push_segment(&mut path, (1, 6), (grid_w - 2, 6));
+        Self::push_segment(&mut path, (grid_w - 2, 6), (grid_w - 2, 12));
+        Self::push_segment(&mut path, (grid_w - 2, 12), (6, 12));
+        Self::push_segment(&mut path, (6, 12), (6, 24));
+        Self::push_segment(&mut path, (6, 24), (grid_w - 6, 24));
+        Self::push_segment(&mut path, (grid_w - 6, 24), (grid_w - 6, grid_h - 5));
+        Self::push_segment(&mut path, (grid_w - 6, grid_h - 5), (3, grid_h - 5));
         MapSpec {
             name: "Crosswind",
             grid_w,
