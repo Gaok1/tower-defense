@@ -389,6 +389,14 @@ pub enum TowerKind {
     Frost,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EnemyKind {
+    Fast,
+    Armored,
+    Swarm,
+    Resistant,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Tower {
     pub x: u16,
@@ -400,11 +408,20 @@ pub struct Tower {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Enemy {
+    pub kind: EnemyKind,
     pub path_i: usize,
     pub hp: i32,
     pub move_cd: u16, // ticks até o próximo passo
     pub slow_ticks: u16,
     pub slow_percent: u8,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EnemyTuning {
+    base_hp: i32,
+    move_cd: u16,
+    slow_resist: u8,
+    splash_resist: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -1811,7 +1828,6 @@ impl App {
 
     fn tick_enemies(&mut self) {
         let sp = self.game.speed.max(1) as u16;
-        let base = self.enemy_base_move_cd();
 
         for e in &mut self.game.enemies {
             if e.hp <= 0 {
@@ -1823,7 +1839,9 @@ impl App {
             } else {
                 e.slow_percent = 0;
             }
-            let slow_factor = 100u16.saturating_sub(e.slow_percent as u16);
+            let tuning = self.enemy_tuning(e.kind, self.game.wave);
+            let effective_slow = Self::apply_slow_resist(e.slow_percent, tuning.slow_resist);
+            let slow_factor = 100u16.saturating_sub(effective_slow as u16);
             let effective_sp = (sp * slow_factor / 100).max(1);
 
             if e.move_cd > effective_sp {
@@ -1832,7 +1850,7 @@ impl App {
             }
 
             // move 1 tile
-            e.move_cd = base;
+            e.move_cd = tuning.move_cd;
             if e.path_i + 1 < self.game.path.len() {
                 e.path_i += 1;
             } else {
@@ -1988,22 +2006,39 @@ impl App {
     }
 
     fn spawn_wave(&mut self) {
-        // wave com mais inimigos, mas ritmo mais lento.
-        let count = (2 + (self.game.wave / 2)).clamp(2, 10) as usize;
-        let hp = 45 + self.game.wave * 10;
-        let base = self.enemy_base_move_cd();
+        // wave com mistura por budget (mais tipos conforme o avanço).
+        let wave = self.game.wave.max(1);
+        let mut budget = 6 + wave * 3;
+        let max_enemies = (6 + wave).clamp(6, 20) as usize;
 
         self.game.enemies.clear();
-        for i in 0..count {
+        let mut spawned = 0usize;
+        let mut attempts = 0;
+        while budget > 0 && spawned < max_enemies && attempts < 100 {
+            let mut kind = self.pick_enemy_kind(wave);
+            let mut cost = Self::enemy_budget_cost(kind);
+            if cost as i32 > budget {
+                kind = EnemyKind::Swarm;
+                cost = Self::enemy_budget_cost(kind);
+                if cost as i32 > budget {
+                    break;
+                }
+            }
+
+            let tuning = self.enemy_tuning(kind, wave);
             // pequena defasagem no spawn pelo move_cd inicial
-            let stagger = (i as u16 * 6).min(60);
+            let stagger = (spawned as u16 * 6).min(60);
             self.game.enemies.push(Enemy {
+                kind,
                 path_i: 0,
-                hp,
-                move_cd: base + stagger,
+                hp: tuning.base_hp,
+                move_cd: tuning.move_cd + stagger,
                 slow_ticks: 0,
                 slow_percent: 0,
             });
+            budget -= cost as i32;
+            spawned += 1;
+            attempts += 1;
         }
 
         // limpa FX antigos pra não virar bagunça visual ao trocar wave
@@ -2060,10 +2095,85 @@ impl App {
         }
     }
 
+    fn enemy_tuning(&self, kind: EnemyKind, wave: i32) -> EnemyTuning {
+        let base = self.enemy_base_move_cd();
+        let wave = wave.max(1);
+        match kind {
+            EnemyKind::Swarm => EnemyTuning {
+                base_hp: 30 + wave * 5,
+                move_cd: base + 1,
+                slow_resist: 0,
+                splash_resist: 0,
+            },
+            EnemyKind::Fast => EnemyTuning {
+                base_hp: 32 + wave * 6,
+                move_cd: base.saturating_sub(4).max(6),
+                slow_resist: 0,
+                splash_resist: 5,
+            },
+            EnemyKind::Armored => EnemyTuning {
+                base_hp: 70 + wave * 12,
+                move_cd: base + 2,
+                slow_resist: 10,
+                splash_resist: 35,
+            },
+            EnemyKind::Resistant => EnemyTuning {
+                base_hp: 55 + wave * 9,
+                move_cd: base + 1,
+                slow_resist: 55,
+                splash_resist: 15,
+            },
+        }
+    }
+
+    fn enemy_budget_cost(kind: EnemyKind) -> i32 {
+        match kind {
+            EnemyKind::Swarm => 1,
+            EnemyKind::Fast => 2,
+            EnemyKind::Resistant => 3,
+            EnemyKind::Armored => 4,
+        }
+    }
+
+    fn pick_enemy_kind(&mut self, wave: i32) -> EnemyKind {
+        let wave = wave.max(1) as u32;
+        let weights = [
+            (EnemyKind::Swarm, 6 + wave / 2),
+            (EnemyKind::Fast, 4 + wave / 3),
+            (EnemyKind::Resistant, 2 + wave / 4),
+            (EnemyKind::Armored, 1 + wave / 5),
+        ];
+        let total: u32 = weights.iter().map(|(_, w)| *w).sum();
+        let mut roll = self.rand_u32() % total;
+        for (kind, weight) in weights {
+            if roll < weight {
+                return kind;
+            }
+            roll -= weight;
+        }
+        EnemyKind::Swarm
+    }
+
     fn enemy_base_move_cd(&self) -> u16 {
         // 50ms por tick
         // 14 ticks = 700ms por tile (bem mais lento)
         14
+    }
+
+    fn apply_slow_resist(slow_percent: u8, resist: u8) -> u8 {
+        if slow_percent == 0 || resist == 0 {
+            return slow_percent;
+        }
+        let reduction = (slow_percent as u16 * resist as u16 / 100) as u8;
+        slow_percent.saturating_sub(reduction)
+    }
+
+    fn apply_damage_resist(damage: i32, resist: u8) -> i32 {
+        if damage <= 0 || resist == 0 {
+            return damage;
+        }
+        let reduction = (damage as i64 * resist as i64 / 100) as i32;
+        (damage - reduction).max(0)
     }
 
     fn projectile_step_cd(kind: TowerKind) -> u16 {
@@ -2230,7 +2340,10 @@ impl App {
             if dist == 0 || dist > radius {
                 continue;
             }
+            let tuning = self.enemy_tuning(e.kind, self.game.wave);
             let splash_damage = ((damage as f32) * (percent as f32 / 100.0)).round() as i32;
+            let splash_damage =
+                Self::apply_damage_resist(splash_damage, tuning.splash_resist);
             if splash_damage <= 0 {
                 continue;
             }
@@ -2341,6 +2454,16 @@ impl App {
             y,
         )
         .is_some()
+    }
+
+    pub fn enemy_kind_at(&self, x: u16, y: u16) -> Option<EnemyKind> {
+        let idx = Self::enemy_index_at(
+            self.game.enemies.as_slice(),
+            self.game.path.as_slice(),
+            x,
+            y,
+        )?;
+        self.game.enemies.get(idx).map(|e| e.kind)
     }
 
     fn enemy_index_at(enemies: &[Enemy], path: &[(u16, u16)], x: u16, y: u16) -> Option<usize> {

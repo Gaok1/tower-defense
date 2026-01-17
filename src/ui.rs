@@ -7,9 +7,9 @@ use ratatui::{
 
 use crate::{
     app::{
-        App, ButtonId, ConnectionStatus, HoverAction, IpMode, LayoutMode, LoadMenuFocus,
-        MapSelectAction, MapSpec, MapViewport, MultiplayerAction, MultiplayerFocus,
-        MultiplayerRole, Screen, TOWER_KIND_COUNT, TowerKind,
+        App, ButtonId, ConnectionStatus, EnemyKind, HoverAction, IpMode, LayoutMode,
+        LoadMenuFocus, MapSelectAction, MapSpec, MapViewport, MultiplayerAction,
+        MultiplayerFocus, MultiplayerRole, Screen, TOWER_KIND_COUNT, TowerKind,
     },
     assets,
 };
@@ -1098,10 +1098,10 @@ impl<'a> Widget for MapWidget<'a> {
                 }
 
                 // inimigo por cima
-                if app.enemy_at(cell_x, cell_y) {
+                if let Some(kind) = app.enemy_kind_at(cell_x, cell_y) {
                     let spr = assets::enemy_sprite(app.ui.zoom);
                     let st = Style::default()
-                        .fg(Color::Red)
+                        .fg(enemy_kind_color(kind))
                         .bg(hl_bg)
                         .add_modifier(Modifier::BOLD);
                     draw_sprite(buf, tile_x, tile_y, vp.tile_w, vp.tile_h, spr, st);
@@ -2521,6 +2521,15 @@ fn tower_kind_color(kind: TowerKind) -> Color {
         TowerKind::Cannon => Color::LightRed,
         TowerKind::Tesla => Color::LightBlue,
         TowerKind::Frost => Color::LightBlue,
+    }
+}
+
+fn enemy_kind_color(kind: EnemyKind) -> Color {
+    match kind {
+        EnemyKind::Swarm => Color::LightRed,
+        EnemyKind::Fast => Color::Yellow,
+        EnemyKind::Armored => Color::Gray,
+        EnemyKind::Resistant => Color::LightMagenta,
     }
 }
 
