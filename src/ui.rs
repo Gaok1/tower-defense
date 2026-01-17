@@ -475,7 +475,7 @@ fn draw_build_panel(f: &mut Frame, app: &mut App, area: Rect) {
             "{}. {:<6} ${}",
             i + 1,
             tower_kind_label(*kind),
-            App::tower_cost(*kind)
+            App::tower_cost(*kind, app.game.wave)
         );
 
         let style = if is_active {
@@ -589,12 +589,15 @@ fn draw_inspector_panel(f: &mut Frame, app: &mut App, area: Rect) {
                 ": {}   ",
                 app.game
                     .build_kind
-                    .map(App::tower_cost)
+                    .map(|kind| App::tower_cost(kind, app.game.wave))
                     .map(|c| c.to_string())
                     .unwrap_or_else(|| "-".to_string())
             )),
             Span::styled("Upgrade", Style::default().fg(text_dim())),
-            Span::raw(format!(": {}   ", App::tower_upgrade_cost(t.kind))),
+            Span::raw(format!(
+                ": {}   ",
+                App::tower_upgrade_cost(t.kind, app.game.wave)
+            )),
             Span::styled("Sell", Style::default().fg(text_dim())),
             Span::raw(": +20"),
         ]));
@@ -684,7 +687,7 @@ fn draw_inspector_panel(f: &mut Frame, app: &mut App, area: Rect) {
 
     let upgrade_cost = app
         .selected_tower()
-        .map(|t| App::tower_upgrade_cost(t.kind))
+        .map(|t| App::tower_upgrade_cost(t.kind, app.game.wave))
         .unwrap_or(0);
     let upgrade_text = if app.selected_tower().is_some() {
         format!("Upgrade [U] ({upgrade_cost})  — hover preview")
@@ -711,15 +714,24 @@ fn draw_inspector_panel(f: &mut Frame, app: &mut App, area: Rect) {
             if app.can_build_at(x, y, kind) {
                 format!(
                     "Build [B] ({}) — double click or press Build",
-                    App::tower_cost(kind)
+                    App::tower_cost(kind, app.game.wave)
                 )
             } else if app.is_path(x, y) || app.tower_index_at(x, y).is_some() {
-                format!("Build [B] ({}) — blocked tile", App::tower_cost(kind))
+                format!(
+                    "Build [B] ({}) — blocked tile",
+                    App::tower_cost(kind, app.game.wave)
+                )
             } else {
-                format!("Build [B] ({}) — need more $", App::tower_cost(kind))
+                format!(
+                    "Build [B] ({}) — need more $",
+                    App::tower_cost(kind, app.game.wave)
+                )
             }
         } else {
-            format!("Build [B] ({}) — select tile", App::tower_cost(kind))
+            format!(
+                "Build [B] ({}) — select tile",
+                App::tower_cost(kind, app.game.wave)
+            )
         }
     } else {
         "Build [B] (—) — select tower type".to_string()
