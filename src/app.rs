@@ -3,7 +3,11 @@ use crate::{
     save,
 };
 use ratatui::layout::Rect;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    sync::mpsc,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutMode {
@@ -14,9 +18,86 @@ pub enum LayoutMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     MainMenu,
+    Multiplayer,
     MapSelect,
     LoadGame,
     Game,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MultiplayerRole {
+    Host,
+    Peer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IpMode {
+    Ipv4,
+    Ipv6,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MultiplayerFocus {
+    Role,
+    IpMode,
+    PeerIp,
+    Connect,
+    Name,
+    Continue,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionStatus {
+    Idle,
+    FetchingIp,
+    Ready,
+    Connecting,
+    Connected,
+    Failed,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlayerCursor {
+    pub name: String,
+    pub x: u16,
+    pub y: u16,
+}
+
+#[derive(Debug, Clone)]
+pub struct MultiplayerState {
+    pub active: bool,
+    pub role: MultiplayerRole,
+    pub ip_mode: IpMode,
+    pub local_ip: Option<String>,
+    pub peer_ip: String,
+    pub status: ConnectionStatus,
+    pub focus: MultiplayerFocus,
+    pub name_input: String,
+    pub player_name: Option<String>,
+    pub peer_name: Option<String>,
+    pub last_error: Option<String>,
+    pub cursors: Vec<PlayerCursor>,
+    pub stun_rx: Option<std::sync::mpsc::Receiver<Result<Option<SocketAddr>, String>>>,
+}
+
+impl MultiplayerState {
+    fn new() -> Self {
+        Self {
+            active: false,
+            role: MultiplayerRole::Host,
+            ip_mode: IpMode::Ipv4,
+            local_ip: None,
+            peer_ip: String::new(),
+            status: ConnectionStatus::Idle,
+            focus: MultiplayerFocus::Role,
+            name_input: String::new(),
+            player_name: None,
+            peer_name: None,
+            last_error: None,
+            cursors: Vec::new(),
+            stun_rx: None,
+        }
+    }
 }
 
 pub const TOWER_KIND_COUNT: usize = 6;
@@ -216,6 +297,7 @@ pub struct App {
     pub last_save_error: Option<String>,
     pub main_menu_index: usize,
     pub load_menu: LoadMenuState,
+    pub multiplayer: MultiplayerState,
 
     tick_rate: Duration,
     last_tick: Instant,
@@ -259,6 +341,7 @@ impl App {
                 focus: LoadMenuFocus::Slots,
                 error: None,
             },
+            multiplayer: MultiplayerState::new(),
             // tick mais curto -> animações mais suaves
             tick_rate: Duration::from_millis(50),
             last_tick: Instant::now(),
@@ -324,8 +407,15 @@ impl App {
         self.dev_mode = !self.dev_mode;
     }
 
+    pub fn enter_multiplayer_menu(&mut self) {
+        self.multiplayer = MultiplayerState::new();
+        self.multiplayer.status = ConnectionStatus::FetchingIp;
+        self.refresh_multiplayer_ip();
+        self.screen = Screen::Multiplayer;
+    }
+
     pub fn main_menu_prev(&mut self) {
-        const COUNT: usize = 2; // New game / Load game
+        const COUNT: usize = 3; // New game / Load game / Multiplayer
         if COUNT == 0 {
             return;
         }
@@ -337,7 +427,7 @@ impl App {
     }
 
     pub fn main_menu_next(&mut self) {
-        const COUNT: usize = 2; // New game / Load game
+        const COUNT: usize = 3; // New game / Load game / Multiplayer
         if COUNT == 0 {
             return;
         }
@@ -346,17 +436,27 @@ impl App {
 
     pub fn main_menu_activate(&mut self) {
         match self.main_menu_index {
-            0 => self.screen = Screen::MapSelect,
-            1 => self.enter_load_game(),
+            0 => {
+                self.multiplayer.active = false;
+                self.screen = Screen::MapSelect;
+            }
+            1 => {
+                self.multiplayer.active = false;
+                self.enter_load_game();
+            }
+            2 => self.enter_multiplayer_menu(),
             _ => {}
         }
     }
 
     pub fn enter_main_menu(&mut self) {
         self.screen = Screen::MainMenu;
+        self.multiplayer.active = false;
+        self.multiplayer.cursors.clear();
     }
 
     pub fn enter_load_game(&mut self) {
+        self.multiplayer.active = false;
         self.refresh_load_menu();
         self.screen = Screen::LoadGame;
     }
@@ -450,6 +550,121 @@ impl App {
         }
     }
 
+    pub fn multiplayer_focus_prev(&mut self) {
+        self.multiplayer.focus = match self.multiplayer.focus {
+            MultiplayerFocus::Role => MultiplayerFocus::Continue,
+            MultiplayerFocus::IpMode => MultiplayerFocus::Role,
+            MultiplayerFocus::PeerIp => MultiplayerFocus::IpMode,
+            MultiplayerFocus::Connect => MultiplayerFocus::PeerIp,
+            MultiplayerFocus::Name => MultiplayerFocus::Connect,
+            MultiplayerFocus::Continue => MultiplayerFocus::Name,
+        };
+    }
+
+    pub fn multiplayer_focus_next(&mut self) {
+        self.multiplayer.focus = match self.multiplayer.focus {
+            MultiplayerFocus::Role => MultiplayerFocus::IpMode,
+            MultiplayerFocus::IpMode => MultiplayerFocus::PeerIp,
+            MultiplayerFocus::PeerIp => MultiplayerFocus::Connect,
+            MultiplayerFocus::Connect => MultiplayerFocus::Name,
+            MultiplayerFocus::Name => MultiplayerFocus::Continue,
+            MultiplayerFocus::Continue => MultiplayerFocus::Role,
+        };
+    }
+
+    pub fn multiplayer_toggle_role(&mut self) {
+        self.multiplayer.role = match self.multiplayer.role {
+            MultiplayerRole::Host => MultiplayerRole::Peer,
+            MultiplayerRole::Peer => MultiplayerRole::Host,
+        };
+    }
+
+    pub fn multiplayer_toggle_ip_mode(&mut self) {
+        self.multiplayer.ip_mode = match self.multiplayer.ip_mode {
+            IpMode::Ipv4 => IpMode::Ipv6,
+            IpMode::Ipv6 => IpMode::Ipv4,
+        };
+        self.multiplayer.status = ConnectionStatus::FetchingIp;
+        self.multiplayer.local_ip = None;
+        self.multiplayer.last_error = None;
+        self.refresh_multiplayer_ip();
+    }
+
+    pub fn multiplayer_refresh_ip(&mut self) {
+        self.multiplayer.status = ConnectionStatus::FetchingIp;
+        self.multiplayer.local_ip = None;
+        self.multiplayer.last_error = None;
+        self.refresh_multiplayer_ip();
+    }
+
+    pub fn multiplayer_connect(&mut self) {
+        if self.multiplayer.peer_ip.trim().is_empty() {
+            self.multiplayer.status = ConnectionStatus::Failed;
+            self.multiplayer.last_error = Some("IP do peer vazio".to_string());
+            return;
+        }
+
+        self.multiplayer.status = ConnectionStatus::Connecting;
+        self.multiplayer.last_error = None;
+
+        let parsed = self.parse_peer_addr();
+        match parsed {
+            Some(_) => {
+                self.multiplayer.status = ConnectionStatus::Connected;
+                self.multiplayer.active = true;
+                if self.multiplayer.peer_name.is_none() {
+                    self.multiplayer.peer_name = Some("Peer".to_string());
+                }
+                self.ensure_cursor_slots();
+            }
+            None => {
+                self.multiplayer.status = ConnectionStatus::Failed;
+                self.multiplayer.last_error = Some("IP do peer invalido".to_string());
+            }
+        }
+    }
+
+    pub fn multiplayer_continue(&mut self) {
+        if self.multiplayer.status != ConnectionStatus::Connected {
+            return;
+        }
+        if self.multiplayer.name_input.trim().is_empty() {
+            self.multiplayer.last_error = Some("defina o nome do player".to_string());
+            return;
+        }
+        self.multiplayer.player_name = Some(self.multiplayer.name_input.trim().to_string());
+        self.multiplayer.last_error = None;
+        self.screen = Screen::MapSelect;
+    }
+
+    pub fn multiplayer_input_char(&mut self, ch: char) {
+        match self.multiplayer.focus {
+            MultiplayerFocus::PeerIp => {
+                if ch.is_ascii_digit() || ch == '.' || ch == ':' || ch == '[' || ch == ']' {
+                    self.multiplayer.peer_ip.push(ch);
+                }
+            }
+            MultiplayerFocus::Name => {
+                if self.multiplayer.status == ConnectionStatus::Connected && !ch.is_control() {
+                    self.multiplayer.name_input.push(ch);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn multiplayer_backspace(&mut self) {
+        match self.multiplayer.focus {
+            MultiplayerFocus::PeerIp => {
+                self.multiplayer.peer_ip.pop();
+            }
+            MultiplayerFocus::Name => {
+                self.multiplayer.name_input.pop();
+            }
+            _ => {}
+        }
+    }
+
     fn clamp_load_menu_selection(&mut self) {
         if self.load_menu.slots.is_empty() {
             self.load_menu.selected_slot = 0;
@@ -473,6 +688,124 @@ impl App {
 
     fn selected_slot_last_wave_index(&self) -> usize {
         self.selected_slot_waves_len().saturating_sub(1)
+    }
+
+    fn refresh_multiplayer_ip(&mut self) {
+        let bind_addr = match self.multiplayer.ip_mode {
+            IpMode::Ipv4 => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+            IpMode::Ipv6 => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+        };
+
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let res = crate::stun::detect_public_endpoint(bind_addr);
+            let _ = tx.send(res);
+        });
+        self.multiplayer.stun_rx = Some(rx);
+    }
+
+    fn poll_multiplayer_ip(&mut self) {
+        let Some(rx) = self.multiplayer.stun_rx.as_ref() else {
+            return;
+        };
+
+        match rx.try_recv() {
+            Ok(result) => {
+                self.multiplayer.stun_rx = None;
+                match result {
+                    Ok(Some(addr)) => {
+                        self.multiplayer.local_ip = Some(addr.ip().to_string());
+                        self.multiplayer.status = ConnectionStatus::Ready;
+                    }
+                    Ok(None) => {
+                        self.multiplayer.local_ip = None;
+                        self.multiplayer.status = ConnectionStatus::Failed;
+                        self.multiplayer.last_error =
+                            Some("STUN nao retornou endpoint".to_string());
+                    }
+                    Err(err) => {
+                        self.multiplayer.local_ip = None;
+                        self.multiplayer.status = ConnectionStatus::Failed;
+                        self.multiplayer.last_error = Some(err);
+                    }
+                }
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.multiplayer.stun_rx = None;
+                self.multiplayer.status = ConnectionStatus::Failed;
+                self.multiplayer.last_error = Some("STUN desconectado".to_string());
+            }
+        }
+    }
+
+    fn parse_peer_addr(&self) -> Option<SocketAddr> {
+        let peer = self.multiplayer.peer_ip.trim();
+        if peer.is_empty() {
+            return None;
+        }
+        if let Ok(addr) = peer.parse::<SocketAddr>() {
+            return Some(addr);
+        }
+        let with_port = if peer.contains(':') && !peer.contains(']') && !peer.contains('.') {
+            format!("[{peer}]:0")
+        } else {
+            format!("{peer}:0")
+        };
+        with_port.parse::<SocketAddr>().ok()
+    }
+
+    fn ensure_cursor_slots(&mut self) {
+        if !self.multiplayer.active {
+            self.multiplayer.cursors.clear();
+            return;
+        }
+
+        if self.multiplayer.cursors.is_empty() {
+            if let Some(name) = self
+                .multiplayer
+                .player_name
+                .clone()
+                .or_else(|| Some("Player".to_string()))
+            {
+                let (x, y) = self.game.selected_cell.unwrap_or((0, 0));
+                self.multiplayer.cursors.push(PlayerCursor { name, x, y });
+            }
+        }
+
+        if self.multiplayer.cursors.len() < 2 {
+            let peer_name = self
+                .multiplayer
+                .peer_name
+                .clone()
+                .unwrap_or_else(|| "Peer".to_string());
+            let (x, y) = self.game.selected_cell.unwrap_or((0, 0));
+            self.multiplayer.cursors.push(PlayerCursor {
+                name: peer_name,
+                x,
+                y,
+            });
+        }
+    }
+
+    fn update_multiplayer_cursors(&mut self) {
+        if !self.multiplayer.active {
+            return;
+        }
+        self.ensure_cursor_slots();
+        if let Some(local) = self.multiplayer.cursors.first_mut() {
+            if let Some((x, y)) = self.game.selected_cell {
+                local.x = x;
+                local.y = y;
+            }
+            if let Some(name) = self.multiplayer.player_name.as_ref() {
+                local.name = name.clone();
+            }
+        }
+    }
+
+    pub fn multiplayer_cursors(&self) -> &[PlayerCursor] {
+        self.multiplayer.cursors.as_slice()
     }
 
     fn reset_ui_for_game(&mut self) {
@@ -566,7 +899,9 @@ impl App {
     pub fn on_tick_if_due(&mut self) {
         if self.last_tick.elapsed() >= self.tick_rate {
             self.last_tick = Instant::now();
+            self.poll_multiplayer_ip();
             if self.screen == Screen::Game {
+                self.update_multiplayer_cursors();
                 self.on_tick();
             } else {
                 self.tick_fx();
@@ -897,13 +1232,10 @@ impl App {
         let dir = Vec2i::new((to.x - from.x).signum(), (to.y - from.y).signum());
 
         let seed = self.rand_u32();
-        let fx_id = self.game.fx.spawn_projectile(
-            kind,
-            from,
-            to,
-            ttl.min(u8::MAX as u16) as u8,
-            seed,
-        );
+        let fx_id =
+            self.game
+                .fx
+                .spawn_projectile(kind, from, to, ttl.min(u8::MAX as u16) as u8, seed);
 
         self.game.projectiles.push(Projectile {
             x: from.x,
@@ -1233,6 +1565,9 @@ impl App {
             money_cd: 0,
         };
 
+        self.multiplayer.cursors.clear();
+        self.ensure_cursor_slots();
+
         self.reset_ui_for_game();
         self.screen = Screen::Game;
 
@@ -1250,6 +1585,44 @@ impl App {
         self.spawn_wave();
     }
 
+    fn is_multiplayer_peer(&self) -> bool {
+        self.multiplayer.active && self.multiplayer.role == MultiplayerRole::Peer
+    }
+
+    fn request_build_at(&mut self, x: u16, y: u16, kind: TowerKind) {
+        if self.build_at(x, y, kind) {
+            self.multiplayer.last_error = None;
+            self.game.build_kind = None;
+            self.game.selected_cell = Some((x, y));
+        } else {
+            self.multiplayer.last_error = Some("host recusou a construcao".to_string());
+        }
+    }
+
+    fn request_upgrade(&mut self, idx: usize) {
+        let cost = Self::tower_upgrade_cost(self.game.towers[idx].kind);
+        if !self.dev_mode && self.game.money < cost {
+            self.multiplayer.last_error = Some("host recusou o upgrade".to_string());
+            return;
+        }
+        if self.game.towers[idx].level >= 9 {
+            return;
+        }
+        if !self.dev_mode {
+            self.game.money -= cost;
+        }
+        self.game.towers[idx].level += 1;
+        self.multiplayer.last_error = None;
+    }
+
+    fn request_sell(&mut self, idx: usize) {
+        self.game.towers.remove(idx);
+        if !self.dev_mode {
+            self.game.money = self.game.money.saturating_add(20);
+        }
+        self.multiplayer.last_error = None;
+    }
+
     fn try_build(&mut self) {
         let Some(kind) = self.game.build_kind else {
             return;
@@ -1258,6 +1631,10 @@ impl App {
             return;
         };
         self.game.pending_build = None;
+        if self.is_multiplayer_peer() {
+            self.request_build_at(x, y, kind);
+            return;
+        }
         if self.build_at(x, y, kind) {
             self.game.build_kind = None;
             self.game.selected_cell = Some((x, y));
@@ -1299,6 +1676,10 @@ impl App {
         let Some(idx) = self.tower_index_at(x, y) else {
             return;
         };
+        if self.is_multiplayer_peer() {
+            self.request_upgrade(idx);
+            return;
+        }
 
         let cost = Self::tower_upgrade_cost(self.game.towers[idx].kind);
         if !self.dev_mode && self.game.money < cost {
@@ -1322,6 +1703,10 @@ impl App {
         let Some(idx) = self.tower_index_at(x, y) else {
             return;
         };
+        if self.is_multiplayer_peer() {
+            self.request_sell(idx);
+            return;
+        }
         self.game.towers.remove(idx);
         if !self.dev_mode {
             self.game.money = self.game.money.saturating_add(20);

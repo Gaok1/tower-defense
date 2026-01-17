@@ -7,8 +7,9 @@ use ratatui::{
 
 use crate::{
     app::{
-        App, ButtonId, HoverAction, LayoutMode, LoadMenuFocus, MapSelectAction, MapSpec,
-        MapViewport, Screen, TOWER_KIND_COUNT, TowerKind,
+        App, ButtonId, ConnectionStatus, HoverAction, IpMode, LayoutMode, LoadMenuFocus,
+        MapSelectAction, MapSpec, MapViewport, MultiplayerFocus, MultiplayerRole, Screen,
+        TOWER_KIND_COUNT, TowerKind,
     },
     assets,
 };
@@ -106,6 +107,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     match app.screen {
         Screen::MainMenu => draw_main_menu(f, app, area),
+        Screen::Multiplayer => draw_multiplayer_menu(f, app, area),
         Screen::MapSelect => draw_map_select(f, app, area),
         Screen::LoadGame => draw_load_game(f, app, area),
         Screen::Game => match app.ui.mode {
@@ -1080,6 +1082,60 @@ impl<'a> Widget for MapWidget<'a> {
             &app.game.enemies,
             &app.game.path,
         );
+        draw_player_cursors(buf, area, vp, app);
+    }
+}
+
+fn draw_player_cursors(buf: &mut Buffer, area: Rect, vp: MapViewport, app: &App) {
+    if app.multiplayer_cursors().is_empty() {
+        return;
+    }
+
+    for (idx, cursor) in app.multiplayer_cursors().iter().enumerate() {
+        let cell_x = cursor.x;
+        let cell_y = cursor.y;
+        if cell_x < vp.view_x
+            || cell_y < vp.view_y
+            || cell_x >= vp.view_x + vp.vis_w
+            || cell_y >= vp.view_y + vp.vis_h
+        {
+            continue;
+        }
+
+        let gx = cell_x - vp.view_x;
+        let gy = cell_y - vp.view_y;
+        let tile_x = area.x + gx * vp.tile_w;
+        let tile_y = area.y + gy * vp.tile_h;
+        let color = match idx {
+            0 => Color::LightCyan,
+            1 => Color::LightMagenta,
+            2 => Color::LightYellow,
+            _ => Color::LightGreen,
+        };
+
+        if let Some(cell) = buf.cell_mut((tile_x, tile_y)) {
+            cell.set_symbol("◉").set_style(
+                Style::default()
+                    .fg(color)
+                    .bg(Color::Black)
+                    .add_modifier(Modifier::BOLD),
+            );
+        }
+
+        let name = cursor.name.as_str();
+        let label_x = tile_x.saturating_add(1);
+        for (offset, ch) in name.chars().take(12).enumerate() {
+            let x = label_x + offset as u16;
+            if x >= area.right() {
+                break;
+            }
+            if let Some(cell) = buf.cell_mut((x, tile_y)) {
+                let mut tmp = [0u8; 4];
+                let sym = ch.encode_utf8(&mut tmp);
+                cell.set_symbol(sym)
+                    .set_style(Style::default().fg(color).bg(Color::Black));
+            }
+        }
     }
 }
 
@@ -1115,7 +1171,7 @@ fn draw_main_menu(f: &mut Frame, app: &mut App, area: Rect) {
     let inner = block.inner(rows[1]);
     f.render_widget(block, rows[1]);
 
-    let options = ["New game", "Load saved game"];
+    let options = ["New game", "Load saved game", "Multiplayer"];
     let mut lines: Vec<Line> = Vec::new();
     for (i, label) in options.iter().enumerate() {
         let selected = app.main_menu_index == i;
@@ -1145,6 +1201,157 @@ fn draw_main_menu(f: &mut Frame, app: &mut App, area: Rect) {
     .block(panel_block("Help"))
     .style(Style::default().bg(bg()));
     f.render_widget(footer, rows[2]);
+}
+
+fn draw_multiplayer_menu(f: &mut Frame, app: &mut App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Min(12),
+            Constraint::Length(4),
+        ])
+        .split(area);
+
+    let header = Paragraph::new(vec![
+        Line::from(vec![Span::styled(
+            " MULTIPLAYER ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(accent())
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(Span::styled(
+            "Conexao P2P antes da selecao de mapa",
+            Style::default().fg(text_dim()),
+        )),
+    ])
+    .alignment(Alignment::Center)
+    .block(panel_block("Lobby"))
+    .style(Style::default().bg(bg()));
+    f.render_widget(header, rows[0]);
+
+    let block = panel_block("Connection");
+    let inner = block.inner(rows[1]);
+    f.render_widget(block, rows[1]);
+
+    let focused = app.multiplayer.focus;
+    let role_text = match app.multiplayer.role {
+        MultiplayerRole::Host => "Host",
+        MultiplayerRole::Peer => "Player",
+    };
+    let ip_mode_text = match app.multiplayer.ip_mode {
+        IpMode::Ipv4 => "IPv4",
+        IpMode::Ipv6 => "IPv6",
+    };
+    let local_ip = app
+        .multiplayer
+        .local_ip
+        .clone()
+        .unwrap_or_else(|| "detectando...".to_string());
+    let status_text = match app.multiplayer.status {
+        ConnectionStatus::Idle => "ocioso",
+        ConnectionStatus::FetchingIp => "buscando IP (STUN)",
+        ConnectionStatus::Ready => "pronto para conectar",
+        ConnectionStatus::Connecting => "conectando",
+        ConnectionStatus::Connected => "conectado",
+        ConnectionStatus::Failed => "falha",
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(menu_line(
+        "Role",
+        role_text,
+        focused == MultiplayerFocus::Role,
+        true,
+    ));
+    lines.push(menu_line(
+        "IP mode",
+        ip_mode_text,
+        focused == MultiplayerFocus::IpMode,
+        true,
+    ));
+    lines.push(Line::from(Span::styled(
+        format!(" Public IP (STUN): {local_ip}"),
+        Style::default().fg(text_dim()),
+    )));
+    lines.push(menu_line(
+        "Peer IP",
+        if app.multiplayer.peer_ip.is_empty() {
+            "<vazio>"
+        } else {
+            app.multiplayer.peer_ip.as_str()
+        },
+        focused == MultiplayerFocus::PeerIp,
+        true,
+    ));
+    lines.push(menu_line(
+        "Connect",
+        status_text,
+        focused == MultiplayerFocus::Connect,
+        true,
+    ));
+
+    let name_enabled = app.multiplayer.status == ConnectionStatus::Connected;
+    lines.push(menu_line(
+        "Name",
+        if app.multiplayer.name_input.is_empty() {
+            "<defina seu nome>"
+        } else {
+            app.multiplayer.name_input.as_str()
+        },
+        focused == MultiplayerFocus::Name,
+        name_enabled,
+    ));
+    lines.push(menu_line(
+        "Continue",
+        "Selecionar mapa",
+        focused == MultiplayerFocus::Continue,
+        name_enabled,
+    ));
+
+    if let Some(err) = app.multiplayer.last_error.as_ref() {
+        lines.push(Line::from(Span::styled(
+            format!(" Erro: {err}"),
+            Style::default().fg(danger()),
+        )));
+    }
+
+    f.render_widget(
+        Paragraph::new(lines)
+            .alignment(Alignment::Left)
+            .style(Style::default().bg(bg()))
+            .wrap(Wrap { trim: true }),
+        inner,
+    );
+
+    let footer = Paragraph::new(Line::from(Span::styled(
+        "Up/Down selecionar  •  Left/Right alternar  •  Enter confirmar  •  R atualizar STUN  •  Esc voltar",
+        Style::default().fg(text_dim()),
+    )))
+    .alignment(Alignment::Center)
+    .block(panel_block("Help"))
+    .style(Style::default().bg(bg()));
+    f.render_widget(footer, rows[2]);
+}
+
+fn menu_line(label: &str, value: &str, selected: bool, enabled: bool) -> Line<'static> {
+    let mut style = if selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(accent())
+            .add_modifier(Modifier::BOLD)
+    } else if enabled {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(text_dim())
+    };
+
+    if !enabled {
+        style = style.add_modifier(Modifier::DIM);
+    }
+
+    Line::from(Span::styled(format!(" {label}: {value}"), style))
 }
 
 fn draw_load_game(f: &mut Frame, app: &mut App, area: Rect) {

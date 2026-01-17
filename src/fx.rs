@@ -1054,14 +1054,7 @@ fn draw_screen_line(
         };
 
         used += draw_screen_cell(
-            x0 as u16,
-            y0 as u16,
-            glyph,
-            color,
-            modifier,
-            buf,
-            area,
-            budget,
+            x0 as u16, y0 as u16, glyph, color, modifier, buf, area, budget,
         );
 
         if x0 == x1 && y0 == y1 {

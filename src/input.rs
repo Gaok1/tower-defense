@@ -22,6 +22,39 @@ pub fn pump(app: &mut App) -> Result<()> {
                     KeyCode::Enter | KeyCode::Char(' ') => app.main_menu_activate(),
                     _ => {}
                 },
+                Screen::Multiplayer => match k.code {
+                    KeyCode::Esc => app.enter_main_menu(),
+                    KeyCode::Char('q') => app.should_quit = true,
+                    KeyCode::Up | KeyCode::Char('w') => app.multiplayer_focus_prev(),
+                    KeyCode::Down | KeyCode::Char('s') => app.multiplayer_focus_next(),
+                    KeyCode::Left | KeyCode::Char('a') => match app.multiplayer.focus {
+                        crate::app::MultiplayerFocus::Role => app.multiplayer_toggle_role(),
+                        crate::app::MultiplayerFocus::IpMode => app.multiplayer_toggle_ip_mode(),
+                        _ => {}
+                    },
+                    KeyCode::Right | KeyCode::Char('d') => match app.multiplayer.focus {
+                        crate::app::MultiplayerFocus::Role => app.multiplayer_toggle_role(),
+                        crate::app::MultiplayerFocus::IpMode => app.multiplayer_toggle_ip_mode(),
+                        _ => {}
+                    },
+                    KeyCode::Enter => match app.multiplayer.focus {
+                        crate::app::MultiplayerFocus::Connect => app.multiplayer_connect(),
+                        crate::app::MultiplayerFocus::Continue => app.multiplayer_continue(),
+                        _ => {}
+                    },
+                    KeyCode::Backspace => app.multiplayer_backspace(),
+                    KeyCode::Char('r')
+                        if !matches!(
+                            app.multiplayer.focus,
+                            crate::app::MultiplayerFocus::PeerIp
+                                | crate::app::MultiplayerFocus::Name
+                        ) =>
+                    {
+                        app.multiplayer_refresh_ip()
+                    }
+                    KeyCode::Char(c) => app.multiplayer_input_char(c),
+                    _ => {}
+                },
                 Screen::MapSelect => match k.code {
                     KeyCode::Esc => app.enter_main_menu(),
                     KeyCode::Char('q') => app.should_quit = true,
