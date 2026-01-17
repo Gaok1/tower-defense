@@ -189,6 +189,7 @@ pub const TOWER_KIND_COUNT: usize = 6;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ButtonId {
     StartPause,
+    StartWave,
     Build,
     Upgrade,
     Sell,
@@ -240,7 +241,7 @@ pub enum MultiplayerAction {
 #[derive(Debug, Clone, Copy)]
 pub struct UiHitboxes {
     pub map_inner: Rect,
-    pub buttons: [Rect; 6],
+    pub buttons: [Rect; 7],
     pub inspector_upgrade: Rect, // linha clicável no inspector
     pub build_options: [Rect; TOWER_KIND_COUNT],
     pub map_select_left: Rect,
@@ -282,7 +283,7 @@ impl Default for UiHitboxes {
     fn default() -> Self {
         Self {
             map_inner: Rect::new(0, 0, 0, 0),
-            buttons: [Rect::new(0, 0, 0, 0); 6],
+            buttons: [Rect::new(0, 0, 0, 0); 7],
             inspector_upgrade: Rect::new(0, 0, 0, 0),
             build_options: [Rect::new(0, 0, 0, 0); TOWER_KIND_COUNT],
             map_select_left: Rect::new(0, 0, 0, 0),
@@ -414,6 +415,9 @@ pub struct Enemy {
     pub move_cd: u16, // ticks até o próximo passo
     pub slow_ticks: u16,
     pub slow_percent: u8,
+    pub reward: i32,
+    pub rewarded: bool,
+    pub escaped: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -478,6 +482,8 @@ pub struct GameState {
 
     // economia/time
     pub money_cd: u16,
+    pub pending_wave_start: bool,
+    pub prep_ticks: u32,
 }
 
 #[derive(Debug)]
@@ -602,6 +608,8 @@ impl App {
                 projectiles: vec![],
                 fx: FxManager::new(),
                 money_cd: 0,
+                pending_wave_start: false,
+                prep_ticks: 0,
             },
             maps,
             map_index,
@@ -1298,6 +1306,10 @@ impl App {
                 self.cycle_speed();
                 Ok(())
             }
+            NetCmd::StartWave => {
+                self.start_pending_wave();
+                Ok(())
+            }
             NetCmd::Build { x, y, kind } => {
                 if self.build_at(x, y, kind) {
                     self.multiplayer.last_error = None;
@@ -1343,6 +1355,8 @@ impl App {
             money: self.game.money,
             lives: self.game.lives,
             wave: self.game.wave,
+            pending_wave_start: self.game.pending_wave_start,
+            prep_ticks: self.game.prep_ticks,
             towers: self.game.towers.clone(),
             enemies: self.game.enemies.clone(),
         }
@@ -1359,6 +1373,8 @@ impl App {
         self.game.money = state.money;
         self.game.lives = state.lives;
         self.game.wave = state.wave;
+        self.game.pending_wave_start = state.pending_wave_start;
+        self.game.prep_ticks = state.prep_ticks;
         self.game.towers = state.towers;
         self.game.enemies = state.enemies;
 
@@ -1692,6 +1708,8 @@ impl App {
             projectiles: vec![],
             fx: FxManager::new(),
             money_cd: 0,
+            pending_wave_start: false,
+            prep_ticks: 0,
         };
 
         self.reset_ui_for_game();
@@ -1732,6 +1750,7 @@ impl App {
             }
             let cmd_option = match id {
                 ButtonId::StartPause => Some(NetCmd::TogglePause),
+                ButtonId::StartWave => Some(NetCmd::StartWave),
                 ButtonId::Speed => Some(NetCmd::CycleSpeed),
                 ButtonId::Quit => {
                     self.should_quit = true;
@@ -1750,6 +1769,7 @@ impl App {
 
         match id {
             ButtonId::StartPause => self.game.running = !self.game.running,
+            ButtonId::StartWave => self.start_pending_wave(),
             ButtonId::Build => self.try_build(),
             ButtonId::Upgrade => self.try_upgrade(),
             ButtonId::Sell => self.try_sell(),
@@ -1769,6 +1789,7 @@ impl App {
         self.tick_enemies();
         self.tick_towers();
         self.tick_projectiles();
+        self.tick_enemy_rewards();
         self.tick_economy_and_waves();
 
         if !self.dev_mode && self.game.lives <= 0 {
@@ -1855,6 +1876,7 @@ impl App {
                 e.path_i += 1;
             } else {
                 e.hp = 0;
+                e.escaped = true;
                 if !self.dev_mode {
                     self.game.lives = self.game.lives.saturating_sub(1);
                 }
@@ -2000,32 +2022,41 @@ impl App {
 
         let alive = self.game.enemies.iter().any(|e| e.hp > 0);
         if !alive && (self.dev_mode || self.game.lives > 0) {
-            self.game.wave += 1;
-            self.spawn_wave();
+            if !self.game.pending_wave_start {
+                self.game.wave += 1;
+                self.game.pending_wave_start = true;
+                self.game.prep_ticks = 0;
+            } else {
+                self.game.prep_ticks = self.game.prep_ticks.saturating_add(1);
+            }
         }
     }
 
     fn spawn_wave(&mut self) {
-        // wave com mistura por budget (mais tipos conforme o avanço).
+        // wave com mistura por budget (HP + velocidade + tipo).
         let wave = self.game.wave.max(1);
-        let mut budget = 6 + wave * 3;
-        let max_enemies = (6 + wave).clamp(6, 20) as usize;
+        let mut budget = 14 + wave * 8;
+        let max_enemies = (8 + wave).clamp(8, 24) as usize;
 
         self.game.enemies.clear();
+        self.game.pending_wave_start = false;
+        self.game.prep_ticks = 0;
         let mut spawned = 0usize;
         let mut attempts = 0;
         while budget > 0 && spawned < max_enemies && attempts < 100 {
             let mut kind = self.pick_enemy_kind(wave);
-            let mut cost = Self::enemy_budget_cost(kind);
+            let mut tuning = self.enemy_tuning(kind, wave);
+            let mut cost = self.enemy_budget_cost(kind, tuning);
             if cost as i32 > budget {
                 kind = EnemyKind::Swarm;
-                cost = Self::enemy_budget_cost(kind);
+                tuning = self.enemy_tuning(kind, wave);
+                cost = self.enemy_budget_cost(kind, tuning);
                 if cost as i32 > budget {
                     break;
                 }
             }
 
-            let tuning = self.enemy_tuning(kind, wave);
+            let reward = Self::enemy_reward_value(cost);
             // pequena defasagem no spawn pelo move_cd inicial
             let stagger = (spawned as u16 * 6).min(60);
             self.game.enemies.push(Enemy {
@@ -2035,6 +2066,9 @@ impl App {
                 move_cd: tuning.move_cd + stagger,
                 slow_ticks: 0,
                 slow_percent: 0,
+                reward,
+                rewarded: false,
+                escaped: false,
             });
             budget -= cost as i32;
             spawned += 1;
@@ -2126,13 +2160,21 @@ impl App {
         }
     }
 
-    fn enemy_budget_cost(kind: EnemyKind) -> i32 {
-        match kind {
-            EnemyKind::Swarm => 1,
+    fn enemy_budget_cost(&self, kind: EnemyKind, tuning: EnemyTuning) -> i32 {
+        let hp_cost = (tuning.base_hp / 25).max(1);
+        let base_cd = self.enemy_base_move_cd() as i32;
+        let speed_cost = ((base_cd - tuning.move_cd as i32).max(0) / 2) + 1;
+        let kind_cost = match kind {
+            EnemyKind::Swarm => 0,
             EnemyKind::Fast => 2,
             EnemyKind::Resistant => 3,
             EnemyKind::Armored => 4,
-        }
+        };
+        hp_cost + speed_cost + kind_cost
+    }
+
+    fn enemy_reward_value(cost: i32) -> i32 {
+        (cost * 2).clamp(2, 30)
     }
 
     fn pick_enemy_kind(&mut self, wave: i32) -> EnemyKind {
@@ -2158,6 +2200,44 @@ impl App {
         // 50ms por tick
         // 14 ticks = 700ms por tile (bem mais lento)
         14
+    }
+
+    fn tick_enemy_rewards(&mut self) {
+        for e in &mut self.game.enemies {
+            if e.hp > 0 || e.rewarded || e.escaped {
+                continue;
+            }
+            e.rewarded = true;
+            if !self.dev_mode && e.reward > 0 {
+                self.game.money = self.game.money.saturating_add(e.reward);
+            }
+        }
+    }
+
+    pub fn prep_bonus_gold(&self) -> i32 {
+        let seconds = (self.game.prep_ticks / 20) as i32;
+        if seconds == 0 {
+            return 0;
+        }
+        let wave_bonus = (self.game.wave / 3).max(1);
+        seconds.saturating_mul(2 + wave_bonus)
+    }
+
+    fn start_pending_wave(&mut self) {
+        if !self.game.pending_wave_start {
+            self.show_top_notice("wave ainda em andamento");
+            return;
+        }
+        if self.game.enemies.iter().any(|e| e.hp > 0) {
+            return;
+        }
+
+        let bonus = self.prep_bonus_gold();
+        if bonus > 0 && !self.dev_mode {
+            self.game.money = self.game.money.saturating_add(bonus);
+            self.show_top_notice(format!("bonus de preparo +${bonus}"));
+        }
+        self.spawn_wave();
     }
 
     fn apply_slow_resist(slow_percent: u8, resist: u8) -> u8 {
@@ -2656,6 +2736,8 @@ impl App {
             projectiles: vec![],
             fx: FxManager::new(),
             money_cd: 0,
+            pending_wave_start: false,
+            prep_ticks: 0,
         };
 
         self.multiplayer.cursors.clear();

@@ -259,11 +259,16 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
 
     // Center: wave progress
     let pct = app.wave_progress_percent();
+    let wave_label = if app.game.pending_wave_start {
+        format!(" Wave {} — PREP ", app.game.wave)
+    } else {
+        format!(" Wave {} ", app.game.wave)
+    };
     let wave = Gauge::default()
         .block(
             Block::default()
                 .title(Span::styled(
-                    format!(" Wave {} ", app.game.wave),
+                    wave_label,
                     Style::default()
                         .fg(panel_title())
                         .add_modifier(Modifier::BOLD),
@@ -879,10 +884,22 @@ fn draw_footer_buttons(f: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Fill(1),
             Constraint::Fill(1),
             Constraint::Fill(1),
+            Constraint::Fill(1),
         ])
         .split(area);
 
-    let defs: [(ButtonId, String); 6] = [
+    let prep_bonus = app.prep_bonus_gold();
+    let start_wave_label = if app.game.pending_wave_start {
+        if prep_bonus > 0 {
+            format!("Start Wave +${prep_bonus} [R]")
+        } else {
+            "Start Wave [R]".to_string()
+        }
+    } else {
+        "Start Wave [R]".to_string()
+    };
+
+    let defs: [(ButtonId, String); 7] = [
         (
             ButtonId::StartPause,
             if app.game.running {
@@ -891,6 +908,7 @@ fn draw_footer_buttons(f: &mut Frame, app: &mut App, area: Rect) {
                 "Start [Space]".to_string()
             },
         ),
+        (ButtonId::StartWave, start_wave_label),
         (ButtonId::Build, "Build [B]".to_string()),
         (ButtonId::Upgrade, "Upgrade [U]".to_string()),
         (ButtonId::Sell, "Sell [S]".to_string()),
@@ -900,7 +918,8 @@ fn draw_footer_buttons(f: &mut Frame, app: &mut App, area: Rect) {
 
     for (i, (id, label)) in defs.iter().enumerate() {
         let hovered = app.ui.hover_button == Some(*id);
-        let active = *id == ButtonId::StartPause && app.game.running;
+        let active = (*id == ButtonId::StartPause && app.game.running)
+            || (*id == ButtonId::StartWave && app.game.pending_wave_start);
 
         let base = if hovered {
             Style::default().fg(Color::Black).bg(accent())

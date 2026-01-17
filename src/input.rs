@@ -79,6 +79,7 @@ pub fn pump(app: &mut App) -> Result<()> {
                 Screen::Game => match k.code {
                     KeyCode::Esc | KeyCode::Char('q') => app.should_quit = true,
                     KeyCode::Char(' ') => app.handle_button(ButtonId::StartPause),
+                    KeyCode::Char('r') => app.handle_button(ButtonId::StartWave),
                     KeyCode::Char('b') => app.handle_button(ButtonId::Build),
                     KeyCode::Char('u') => app.handle_button(ButtonId::Upgrade),
                     KeyCode::Char('s') => app.handle_button(ButtonId::Sell),
@@ -307,6 +308,7 @@ fn hit_test_button(app: &App, x: u16, y: u16) -> Option<ButtonId> {
     let rects = app.ui.hit.buttons;
     let ids = [
         ButtonId::StartPause,
+        ButtonId::StartWave,
         ButtonId::Build,
         ButtonId::Upgrade,
         ButtonId::Sell,
