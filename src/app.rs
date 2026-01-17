@@ -392,10 +392,69 @@ pub enum TowerKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EnemyKind {
-    Fast,
-    Armored,
+    Runner,
+    Tank,
     Swarm,
-    Resistant,
+    Shielded,
+    Healer,
+    Sneak,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TargetMode {
+    Primeiro,
+    Ultimo,
+    MaisForte,
+    MaisFraco,
+    MaisRapido,
+    MaisLento,
+    MaisPerigoso,
+    MaisCurador,
+}
+
+impl TargetMode {
+    fn next(self) -> Self {
+        match self {
+            TargetMode::Primeiro => TargetMode::Ultimo,
+            TargetMode::Ultimo => TargetMode::MaisForte,
+            TargetMode::MaisForte => TargetMode::MaisFraco,
+            TargetMode::MaisFraco => TargetMode::MaisRapido,
+            TargetMode::MaisRapido => TargetMode::MaisLento,
+            TargetMode::MaisLento => TargetMode::MaisPerigoso,
+            TargetMode::MaisPerigoso => TargetMode::MaisCurador,
+            TargetMode::MaisCurador => TargetMode::Primeiro,
+        }
+    }
+}
+
+impl From<save::TargetModeSave> for TargetMode {
+    fn from(value: save::TargetModeSave) -> Self {
+        match value {
+            save::TargetModeSave::Primeiro => TargetMode::Primeiro,
+            save::TargetModeSave::Ultimo => TargetMode::Ultimo,
+            save::TargetModeSave::MaisForte => TargetMode::MaisForte,
+            save::TargetModeSave::MaisFraco => TargetMode::MaisFraco,
+            save::TargetModeSave::MaisRapido => TargetMode::MaisRapido,
+            save::TargetModeSave::MaisLento => TargetMode::MaisLento,
+            save::TargetModeSave::MaisPerigoso => TargetMode::MaisPerigoso,
+            save::TargetModeSave::MaisCurador => TargetMode::MaisCurador,
+        }
+    }
+}
+
+impl From<TargetMode> for save::TargetModeSave {
+    fn from(value: TargetMode) -> Self {
+        match value {
+            TargetMode::Primeiro => save::TargetModeSave::Primeiro,
+            TargetMode::Ultimo => save::TargetModeSave::Ultimo,
+            TargetMode::MaisForte => save::TargetModeSave::MaisForte,
+            TargetMode::MaisFraco => save::TargetModeSave::MaisFraco,
+            TargetMode::MaisRapido => save::TargetModeSave::MaisRapido,
+            TargetMode::MaisLento => save::TargetModeSave::MaisLento,
+            TargetMode::MaisPerigoso => save::TargetModeSave::MaisPerigoso,
+            TargetMode::MaisCurador => save::TargetModeSave::MaisCurador,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -405,6 +464,7 @@ pub struct Tower {
     pub kind: TowerKind,
     pub level: u8,
     pub cooldown: u16, // ticks até poder atirar
+    pub target_mode: TargetMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -426,6 +486,9 @@ struct EnemyTuning {
     move_cd: u16,
     slow_resist: u8,
     splash_resist: u8,
+    rapid_resist: u8,
+    heal_radius: u16,
+    heal_amount: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -603,6 +666,7 @@ impl App {
                     kind: TowerKind::Basic,
                     level: 1,
                     cooldown: 0,
+                    target_mode: TargetMode::Primeiro,
                 }],
                 enemies: vec![],
                 projectiles: vec![],
@@ -1345,6 +1409,13 @@ impl App {
                 }
                 Ok(())
             }
+            NetCmd::SetTargetMode { x, y, mode } => {
+                let Some(idx) = self.tower_index_at(x, y) else {
+                    return Err("sem torre para ajustar alvo".to_string());
+                };
+                self.game.towers[idx].target_mode = mode;
+                Ok(())
+            }
         }
     }
 
@@ -1667,6 +1738,10 @@ impl App {
                 },
                 level: t.level,
                 cooldown: 0,
+                target_mode: t
+                    .target_mode
+                    .map(TargetMode::from)
+                    .unwrap_or(TargetMode::Primeiro),
             })
             .collect();
 
@@ -1678,6 +1753,7 @@ impl App {
                 kind: TowerKind::Basic,
                 level: 1,
                 cooldown: 0,
+                target_mode: TargetMode::Primeiro,
             });
         }
 
@@ -1849,6 +1925,7 @@ impl App {
 
     fn tick_enemies(&mut self) {
         let sp = self.game.speed.max(1) as u16;
+        let mut healer_pulses: Vec<(u16, u16, u16, i32)> = Vec::new();
 
         for e in &mut self.game.enemies {
             if e.hp <= 0 {
@@ -1881,6 +1958,30 @@ impl App {
                     self.game.lives = self.game.lives.saturating_sub(1);
                 }
             }
+
+            if e.hp > 0 && e.kind == EnemyKind::Healer && tuning.heal_amount > 0 {
+                let (hx, hy) = self.game.path[e.path_i];
+                healer_pulses.push((hx, hy, tuning.heal_radius, tuning.heal_amount));
+            }
+        }
+
+        if healer_pulses.is_empty() {
+            return;
+        }
+
+        let wave = self.game.wave;
+        for (hx, hy, radius, amount) in healer_pulses {
+            for enemy in &mut self.game.enemies {
+                if enemy.hp <= 0 {
+                    continue;
+                }
+                let (ex, ey) = self.game.path[enemy.path_i];
+                if manhattan(hx, hy, ex, ey) > radius {
+                    continue;
+                }
+                let max_hp = self.enemy_tuning(enemy.kind, wave).base_hp;
+                enemy.hp = (enemy.hp + amount).min(max_hp);
+            }
         }
     }
 
@@ -1896,11 +1997,10 @@ impl App {
             t.cooldown = 0;
 
             let stats = Self::tower_stats(t);
-            let Some((tx, ty)) = Self::acquire_target(
+            let Some((tx, ty)) = self.acquire_target(
+                t,
                 self.game.enemies.as_slice(),
                 self.game.path.as_slice(),
-                t.x,
-                t.y,
                 stats.range,
             ) else {
                 continue;
@@ -1961,7 +2061,12 @@ impl App {
                     hit_y,
                 ) {
                     let e = &mut self.game.enemies[ei];
-                    e.hp -= p.damage;
+                    let tuning = self.enemy_tuning(e.kind, self.game.wave);
+                    let mut damage = p.damage;
+                    if p.kind == TowerKind::Rapid {
+                        damage = Self::apply_damage_resist(damage, tuning.rapid_resist);
+                    }
+                    e.hp -= damage;
                     if e.hp < 0 {
                         e.hp = 0;
                     }
@@ -2108,6 +2213,7 @@ impl App {
                     TowerKind::Frost => save::TowerKindSave::Frost,
                 },
                 level: t.level,
+                target_mode: Some(t.target_mode.into()),
             })
             .collect();
 
@@ -2134,28 +2240,58 @@ impl App {
         let wave = wave.max(1);
         match kind {
             EnemyKind::Swarm => EnemyTuning {
-                base_hp: 30 + wave * 5,
-                move_cd: base + 1,
+                base_hp: 28 + wave * 5,
+                move_cd: base + 2,
                 slow_resist: 0,
                 splash_resist: 0,
+                rapid_resist: 0,
+                heal_radius: 0,
+                heal_amount: 0,
             },
-            EnemyKind::Fast => EnemyTuning {
-                base_hp: 32 + wave * 6,
-                move_cd: base.saturating_sub(4).max(6),
+            EnemyKind::Runner => EnemyTuning {
+                base_hp: 22 + wave * 4,
+                move_cd: base.saturating_sub(5).max(5),
                 slow_resist: 0,
-                splash_resist: 5,
+                splash_resist: 0,
+                rapid_resist: 0,
+                heal_radius: 0,
+                heal_amount: 0,
             },
-            EnemyKind::Armored => EnemyTuning {
-                base_hp: 70 + wave * 12,
-                move_cd: base + 2,
-                slow_resist: 10,
-                splash_resist: 35,
+            EnemyKind::Tank => EnemyTuning {
+                base_hp: 95 + wave * 14,
+                move_cd: base + 3,
+                slow_resist: 15,
+                splash_resist: 30,
+                rapid_resist: 15,
+                heal_radius: 0,
+                heal_amount: 0,
             },
-            EnemyKind::Resistant => EnemyTuning {
-                base_hp: 55 + wave * 9,
+            EnemyKind::Shielded => EnemyTuning {
+                base_hp: 60 + wave * 9,
                 move_cd: base + 1,
-                slow_resist: 55,
+                slow_resist: 20,
                 splash_resist: 15,
+                rapid_resist: 45,
+                heal_radius: 0,
+                heal_amount: 0,
+            },
+            EnemyKind::Healer => EnemyTuning {
+                base_hp: 52 + wave * 8,
+                move_cd: base + 1,
+                slow_resist: 10,
+                splash_resist: 10,
+                rapid_resist: 0,
+                heal_radius: 1,
+                heal_amount: 6 + (wave / 2),
+            },
+            EnemyKind::Sneak => EnemyTuning {
+                base_hp: 36 + wave * 6,
+                move_cd: base.saturating_sub(2).max(7),
+                slow_resist: 20,
+                splash_resist: 12,
+                rapid_resist: 0,
+                heal_radius: 0,
+                heal_amount: 0,
             },
         }
     }
@@ -2166,9 +2302,11 @@ impl App {
         let speed_cost = ((base_cd - tuning.move_cd as i32).max(0) / 2) + 1;
         let kind_cost = match kind {
             EnemyKind::Swarm => 0,
-            EnemyKind::Fast => 2,
-            EnemyKind::Resistant => 3,
-            EnemyKind::Armored => 4,
+            EnemyKind::Runner => 1,
+            EnemyKind::Sneak => 2,
+            EnemyKind::Shielded => 3,
+            EnemyKind::Healer => 4,
+            EnemyKind::Tank => 5,
         };
         hp_cost + speed_cost + kind_cost
     }
@@ -2179,12 +2317,20 @@ impl App {
 
     fn pick_enemy_kind(&mut self, wave: i32) -> EnemyKind {
         let wave = wave.max(1) as u32;
-        let weights = [
+        let mut weights = vec![
             (EnemyKind::Swarm, 6 + wave / 2),
-            (EnemyKind::Fast, 4 + wave / 3),
-            (EnemyKind::Resistant, 2 + wave / 4),
-            (EnemyKind::Armored, 1 + wave / 5),
+            (EnemyKind::Runner, 4 + wave / 3),
+            (EnemyKind::Tank, 1 + wave / 5),
         ];
+        if wave >= 5 {
+            weights.push((EnemyKind::Healer, 2 + wave / 6));
+        }
+        if wave >= 8 {
+            weights.push((EnemyKind::Shielded, 2 + wave / 7));
+        }
+        if wave >= 10 {
+            weights.push((EnemyKind::Sneak, 2 + wave / 8));
+        }
         let total: u32 = weights.iter().map(|(_, w)| *w).sum();
         let mut roll = self.rand_u32() % total;
         for (kind, weight) in weights {
@@ -2498,28 +2644,89 @@ impl App {
     }
 
     fn acquire_target(
+        &self,
+        tower: &Tower,
         enemies: &[Enemy],
         path: &[(u16, u16)],
-        x: u16,
-        y: u16,
         range: u16,
     ) -> Option<(u16, u16)> {
-        let mut best: Option<(u16, u16, u16)> = None; // (ex, ey, dist)
+        let effective_range = self.effective_tower_range(tower, enemies, path, range);
+        let mut best: Option<(u16, u16, i32, usize, u16)> = None; // (ex, ey, score, path_i, dist)
+        let path_len = path.len().max(1);
         for e in enemies {
             if e.hp <= 0 {
                 continue;
             }
             let (ex, ey) = path[e.path_i];
-            let dist = manhattan(x, y, ex, ey);
-            if dist <= range {
-                match best {
-                    None => best = Some((ex, ey, dist)),
-                    Some((_, _, bd)) if dist < bd => best = Some((ex, ey, dist)),
-                    _ => {}
+            let dist = manhattan(tower.x, tower.y, ex, ey);
+            if dist > effective_range {
+                continue;
+            }
+            let score = self.score_target(tower, e, path_len, dist);
+            match best {
+                None => best = Some((ex, ey, score, e.path_i, dist)),
+                Some((_, _, best_score, best_path_i, best_dist)) => {
+                    if score > best_score
+                        || (score == best_score
+                            && (e.path_i > best_path_i
+                                || (e.path_i == best_path_i && dist < best_dist)))
+                    {
+                        best = Some((ex, ey, score, e.path_i, dist));
+                    }
                 }
             }
         }
-        best.map(|(ex, ey, _)| (ex, ey))
+        best.map(|(ex, ey, _, _, _)| (ex, ey))
+    }
+
+    fn effective_tower_range(
+        &self,
+        tower: &Tower,
+        enemies: &[Enemy],
+        path: &[(u16, u16)],
+        range: u16,
+    ) -> u16 {
+        let sneak_radius = 2;
+        let mut debuff = false;
+        for e in enemies {
+            if e.hp <= 0 || e.kind != EnemyKind::Sneak {
+                continue;
+            }
+            let (ex, ey) = path[e.path_i];
+            if manhattan(tower.x, tower.y, ex, ey) <= sneak_radius {
+                debuff = true;
+                break;
+            }
+        }
+        if debuff && range > 1 {
+            range - 1
+        } else {
+            range
+        }
+    }
+
+    fn score_target(&self, tower: &Tower, enemy: &Enemy, path_len: usize, dist: u16) -> i32 {
+        let tuning = self.enemy_tuning(enemy.kind, self.game.wave);
+        let speed_score = (1000 / tuning.move_cd.max(1) as i32).max(1);
+        let progress = enemy.path_i as i32;
+        let path_len = path_len as i32;
+        match tower.target_mode {
+            TargetMode::Primeiro => progress * 1000 - dist as i32,
+            TargetMode::Ultimo => (path_len - progress) * 1000 - dist as i32,
+            TargetMode::MaisForte => enemy.hp,
+            TargetMode::MaisFraco => -enemy.hp,
+            TargetMode::MaisRapido => speed_score,
+            TargetMode::MaisLento => -speed_score,
+            TargetMode::MaisPerigoso => {
+                let healer_bonus = if enemy.kind == EnemyKind::Healer { 120 } else { 0 };
+                let shield_bonus = if enemy.kind == EnemyKind::Shielded { 60 } else { 0 };
+                progress * 120 + enemy.hp / 4 + healer_bonus + shield_bonus - dist as i32
+            }
+            TargetMode::MaisCurador => {
+                let healer_weight = if enemy.kind == EnemyKind::Healer { 2000 } else { 0 };
+                healer_weight + progress * 50 - dist as i32
+            }
+        }
     }
 
     pub fn is_path(&self, x: u16, y: u16) -> bool {
@@ -2731,6 +2938,7 @@ impl App {
                 kind: TowerKind::Basic,
                 level: 1,
                 cooldown: 0,
+                target_mode: TargetMode::Primeiro,
             }],
             enemies: vec![],
             projectiles: vec![],
@@ -2815,6 +3023,16 @@ impl App {
         }
     }
 
+    fn request_target_mode(&mut self, x: u16, y: u16, mode: TargetMode) {
+        match self.send_player_cmd(NetCmd::SetTargetMode { x, y, mode }) {
+            Ok(()) => {
+                self.multiplayer.last_error = None;
+                self.multiplayer.last_info = None;
+            }
+            Err(e) => self.multiplayer.last_error = Some(e),
+        }
+    }
+
     fn try_build(&mut self) {
         let Some(kind) = self.game.build_kind else {
             return;
@@ -2857,6 +3075,7 @@ impl App {
             kind,
             level: 1,
             cooldown: 0,
+            target_mode: TargetMode::Primeiro,
         });
         true
     }
@@ -2903,6 +3122,21 @@ impl App {
         if !self.dev_mode {
             self.game.money = self.game.money.saturating_add(20);
         }
+    }
+
+    pub fn cycle_selected_target_mode(&mut self) {
+        let Some((x, y)) = self.game.selected_cell else {
+            return;
+        };
+        let Some(idx) = self.tower_index_at(x, y) else {
+            return;
+        };
+        let next = self.game.towers[idx].target_mode.next();
+        if self.is_multiplayer_peer() {
+            self.request_target_mode(x, y, next);
+            return;
+        }
+        self.game.towers[idx].target_mode = next;
     }
 
     pub fn wave_progress_percent(&self) -> u16 {
@@ -3069,6 +3303,7 @@ impl App {
             kind,
             level: 1,
             cooldown: 0,
+            target_mode: TargetMode::Primeiro,
         };
         Some(Self::tower_stats(&t))
     }

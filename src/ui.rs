@@ -7,7 +7,7 @@ use ratatui::{
 
 use crate::{
     app::{
-        App, ButtonId, ConnectionStatus, EnemyKind, HoverAction, IpMode, LayoutMode,
+        App, ButtonId, ConnectionStatus, EnemyKind, HoverAction, IpMode, LayoutMode, TargetMode,
         LoadMenuFocus, MapSelectAction, MapSpec, MapViewport, MultiplayerAction,
         MultiplayerFocus, MultiplayerRole, Screen, TOWER_KIND_COUNT, TowerKind,
     },
@@ -374,6 +374,8 @@ fn draw_map_panel(f: &mut Frame, app: &mut App, area: Rect) {
             Span::raw(": sell  "),
             Span::styled("F", Style::default().fg(text_dim())),
             Span::raw(": speed  "),
+            Span::styled("T", Style::default().fg(text_dim())),
+            Span::raw(": target  "),
             Span::styled("+/-", Style::default().fg(text_dim())),
             Span::raw(": zoom  "),
             Span::styled("Q", Style::default().fg(text_dim())),
@@ -543,6 +545,15 @@ fn draw_inspector_panel(f: &mut Frame, app: &mut App, area: Rect) {
                 format!("Lv {}", t.level),
                 Style::default().fg(accent()).add_modifier(Modifier::BOLD),
             ),
+        ]));
+        stats_lines.push(Line::from(vec![
+            Span::styled("Target", Style::default().fg(text_dim())),
+            Span::raw(": "),
+            Span::styled(
+                target_mode_label(t.target_mode),
+                Style::default().fg(accent()).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" [T]"),
         ]));
 
         stats_lines.push(Line::from(""));
@@ -819,7 +830,7 @@ fn draw_compact_info(f: &mut Frame, app: &App, area: Rect) {
                 .unwrap_or_else(|| "-".to_string())
         )),
         Line::from(Span::styled(
-            "Space start/pause • B build • U upgrade • S sell • F speed • Q quit",
+            "Space start/pause • B build • U upgrade • S sell • F speed • T target • Q quit",
             Style::default().fg(text_dim()),
         )),
         Line::from(Span::styled(
@@ -829,6 +840,15 @@ fn draw_compact_info(f: &mut Frame, app: &App, area: Rect) {
     ];
 
     let mut txt = txt;
+    if let Some(t) = app.selected_tower() {
+        txt.insert(
+            2,
+            Line::from(format!(
+                "Target: {} [T]",
+                target_mode_label(t.target_mode)
+            )),
+        );
+    }
     if app.dev_mode {
         let stats = app.game.fx.stats();
         let active_total: u16 = stats.active_by_kind.iter().sum();
@@ -1118,7 +1138,7 @@ impl<'a> Widget for MapWidget<'a> {
 
                 // inimigo por cima
                 if let Some(kind) = app.enemy_kind_at(cell_x, cell_y) {
-                    let spr = assets::enemy_sprite(app.ui.zoom);
+                    let spr = assets::enemy_sprite(kind, app.ui.zoom);
                     let st = Style::default()
                         .fg(enemy_kind_color(kind))
                         .bg(hl_bg)
@@ -2532,6 +2552,19 @@ fn tower_kind_label(kind: TowerKind) -> &'static str {
     }
 }
 
+fn target_mode_label(mode: TargetMode) -> &'static str {
+    match mode {
+        TargetMode::Primeiro => "Primeiro",
+        TargetMode::Ultimo => "Ultimo",
+        TargetMode::MaisForte => "Mais forte",
+        TargetMode::MaisFraco => "Mais fraco",
+        TargetMode::MaisRapido => "Mais rapido",
+        TargetMode::MaisLento => "Mais lento",
+        TargetMode::MaisPerigoso => "Mais perigoso",
+        TargetMode::MaisCurador => "Mais curador",
+    }
+}
+
 fn tower_kind_color(kind: TowerKind) -> Color {
     match kind {
         TowerKind::Basic => warn(),
@@ -2546,9 +2579,11 @@ fn tower_kind_color(kind: TowerKind) -> Color {
 fn enemy_kind_color(kind: EnemyKind) -> Color {
     match kind {
         EnemyKind::Swarm => Color::LightRed,
-        EnemyKind::Fast => Color::Yellow,
-        EnemyKind::Armored => Color::Gray,
-        EnemyKind::Resistant => Color::LightMagenta,
+        EnemyKind::Runner => Color::Yellow,
+        EnemyKind::Tank => Color::Gray,
+        EnemyKind::Shielded => Color::Cyan,
+        EnemyKind::Healer => Color::LightGreen,
+        EnemyKind::Sneak => Color::LightMagenta,
     }
 }
 
