@@ -2,7 +2,9 @@ use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 use std::time::Duration;
 
-use crate::app::{App, ButtonId, HoverAction, MapSelectAction, Screen, TowerKind};
+use crate::app::{
+    App, ButtonId, HoverAction, MapSelectAction, MultiplayerAction, Screen, TowerKind,
+};
 
 pub fn pump(app: &mut App) -> Result<()> {
     if !event::poll(Duration::from_millis(12))? {
@@ -128,6 +130,11 @@ pub fn pump(app: &mut App) -> Result<()> {
                     None
                 };
                 app.ui.hover_map_select = hit_test_map_select(app, m.column, m.row);
+                app.ui.hover_multiplayer = if app.screen == Screen::Multiplayer {
+                    hit_test_multiplayer(app, m.column, m.row)
+                } else {
+                    None
+                };
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 app.ui.drag_origin = None;
@@ -170,6 +177,31 @@ pub fn pump(app: &mut App) -> Result<()> {
                                 app.game.selected_cell = None;
                             } else {
                                 app.game.selected_cell = Some(cell);
+                            }
+                        }
+                    }
+                } else if app.screen == Screen::Multiplayer {
+                    if let Some(action) = hit_test_multiplayer(app, m.column, m.row) {
+                        match action {
+                            MultiplayerAction::CreateLobby => {
+                                app.multiplayer_set_role(crate::app::MultiplayerRole::Host)
+                            }
+                            MultiplayerAction::JoinLobby => {
+                                app.multiplayer_set_role(crate::app::MultiplayerRole::Peer)
+                            }
+                            MultiplayerAction::ToggleIpMode => app.multiplayer_toggle_ip_mode(),
+                            MultiplayerAction::CopyStunIp => app.multiplayer_copy_public_ip(),
+                            MultiplayerAction::RefreshStun => app.multiplayer_refresh_ip(),
+                            MultiplayerAction::Connect => app.multiplayer_connect(),
+                            MultiplayerAction::Continue => app.multiplayer_continue(),
+                            MultiplayerAction::FocusPeerIp => {
+                                app.multiplayer.focus = crate::app::MultiplayerFocus::PeerIp
+                            }
+                            MultiplayerAction::FocusName => {
+                                app.multiplayer.focus = crate::app::MultiplayerFocus::Name
+                            }
+                            MultiplayerAction::KickPlayer(index) => {
+                                app.multiplayer_kick_player(index)
                             }
                         }
                     }
@@ -332,6 +364,47 @@ fn hit_test_map_select(app: &App, x: u16, y: u16) -> Option<MapSelectAction> {
     }
     if contains(app.ui.hit.map_select_start, x, y) {
         return Some(MapSelectAction::Start);
+    }
+    None
+}
+
+fn hit_test_multiplayer(app: &App, x: u16, y: u16) -> Option<MultiplayerAction> {
+    if app.screen != Screen::Multiplayer {
+        return None;
+    }
+    let hit = &app.ui.multiplayer_hit;
+    if contains(hit.create_btn, x, y) {
+        return Some(MultiplayerAction::CreateLobby);
+    }
+    if contains(hit.join_btn, x, y) {
+        return Some(MultiplayerAction::JoinLobby);
+    }
+    if contains(hit.ip_mode_btn, x, y) {
+        return Some(MultiplayerAction::ToggleIpMode);
+    }
+    if contains(hit.copy_ip_btn, x, y) {
+        return Some(MultiplayerAction::CopyStunIp);
+    }
+    if contains(hit.refresh_ip_btn, x, y) {
+        return Some(MultiplayerAction::RefreshStun);
+    }
+    if contains(hit.connect_btn, x, y) {
+        return Some(MultiplayerAction::Connect);
+    }
+    if contains(hit.continue_btn, x, y) {
+        return Some(MultiplayerAction::Continue);
+    }
+    if contains(hit.peer_ip_field, x, y) {
+        return Some(MultiplayerAction::FocusPeerIp);
+    }
+    if contains(hit.name_field, x, y) {
+        return Some(MultiplayerAction::FocusName);
+    }
+    for (idx, rect) in hit.kick_buttons.iter().enumerate() {
+        if contains(*rect, x, y) {
+            let target = hit.kick_targets.get(idx).copied().unwrap_or(1);
+            return Some(MultiplayerAction::KickPlayer(target));
+        }
     }
     None
 }

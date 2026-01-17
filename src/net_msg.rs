@@ -29,6 +29,9 @@ pub enum NetMsg {
     Hello {
         name: String,
     },
+    Kick {
+        reason: Option<String>,
+    },
     SetMap {
         map_index: usize,
     },

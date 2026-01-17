@@ -221,6 +221,20 @@ pub enum HoverAction {
     UpgradePreview,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MultiplayerAction {
+    CreateLobby,
+    JoinLobby,
+    ToggleIpMode,
+    CopyStunIp,
+    RefreshStun,
+    Connect,
+    Continue,
+    FocusPeerIp,
+    FocusName,
+    KickPlayer(usize),
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct UiHitboxes {
     pub map_inner: Rect,
@@ -270,6 +284,39 @@ impl Default for MapViewport {
 }
 
 #[derive(Debug, Clone)]
+pub struct MultiplayerHitboxes {
+    pub create_btn: Rect,
+    pub join_btn: Rect,
+    pub ip_mode_btn: Rect,
+    pub copy_ip_btn: Rect,
+    pub refresh_ip_btn: Rect,
+    pub connect_btn: Rect,
+    pub continue_btn: Rect,
+    pub peer_ip_field: Rect,
+    pub name_field: Rect,
+    pub kick_buttons: Vec<Rect>,
+    pub kick_targets: Vec<usize>,
+}
+
+impl Default for MultiplayerHitboxes {
+    fn default() -> Self {
+        Self {
+            create_btn: Rect::new(0, 0, 0, 0),
+            join_btn: Rect::new(0, 0, 0, 0),
+            ip_mode_btn: Rect::new(0, 0, 0, 0),
+            copy_ip_btn: Rect::new(0, 0, 0, 0),
+            refresh_ip_btn: Rect::new(0, 0, 0, 0),
+            connect_btn: Rect::new(0, 0, 0, 0),
+            continue_btn: Rect::new(0, 0, 0, 0),
+            peer_ip_field: Rect::new(0, 0, 0, 0),
+            name_field: Rect::new(0, 0, 0, 0),
+            kick_buttons: Vec::new(),
+            kick_targets: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct UiState {
     pub mode: LayoutMode,
     pub hover_button: Option<ButtonId>,
@@ -277,7 +324,9 @@ pub struct UiState {
     pub hover_action: Option<HoverAction>,
     pub hover_build_kind: Option<TowerKind>,
     pub hover_map_select: Option<MapSelectAction>,
+    pub hover_multiplayer: Option<MultiplayerAction>,
     pub hit: UiHitboxes,
+    pub multiplayer_hit: MultiplayerHitboxes,
     pub viewport: MapViewport,
     pub zoom: u16,
     pub last_zoom: u16, // <-- NOVO (pra ancorar zoom sem “pular”)
@@ -435,7 +484,9 @@ impl App {
                 hover_action: None,
                 hover_build_kind: None,
                 hover_map_select: None,
+                hover_multiplayer: None,
                 hit: UiHitboxes::default(),
+                multiplayer_hit: MultiplayerHitboxes::default(),
                 viewport: MapViewport::default(),
                 zoom: 1,
                 last_zoom: 1, // <-- NOVO
@@ -661,9 +712,20 @@ impl App {
     }
 
     pub fn multiplayer_toggle_role(&mut self) {
-        self.multiplayer.role = match self.multiplayer.role {
+        let role = match self.multiplayer.role {
             MultiplayerRole::Host => MultiplayerRole::Peer,
             MultiplayerRole::Peer => MultiplayerRole::Host,
+        };
+        self.multiplayer_set_role(role);
+    }
+
+    pub fn multiplayer_set_role(&mut self, role: MultiplayerRole) {
+        self.multiplayer.role = role;
+        self.multiplayer.last_error = None;
+        self.multiplayer.last_info = None;
+        self.multiplayer.focus = match role {
+            MultiplayerRole::Host => MultiplayerFocus::PublicIp,
+            MultiplayerRole::Peer => MultiplayerFocus::PeerIp,
         };
     }
 
@@ -748,6 +810,30 @@ impl App {
                 self.multiplayer.last_info = Some(format!("conectando em {addr}"));
             }
         }
+    }
+
+    pub fn multiplayer_kick_player(&mut self, index: usize) {
+        if self.multiplayer.role != MultiplayerRole::Host {
+            self.multiplayer.last_error = Some("apenas o host pode expulsar".to_string());
+            return;
+        }
+        if self.multiplayer.status != ConnectionStatus::Connected {
+            self.multiplayer.last_error = Some("nenhum jogador conectado".to_string());
+            return;
+        }
+        if index == 0 {
+            self.multiplayer.last_error = Some("nao e possivel expulsar voce mesmo".to_string());
+            return;
+        }
+        let msg = NetMsg::Kick {
+            reason: Some("expulso pelo host".to_string()),
+        };
+        if let Err(err) = self.multiplayer.queue_game_msg(&msg) {
+            self.multiplayer.status = ConnectionStatus::Failed;
+            self.multiplayer.last_error = Some(err);
+            return;
+        }
+        self.multiplayer.last_info = Some("jogador expulso do lobby".to_string());
     }
 
     pub fn multiplayer_continue(&mut self) {
@@ -840,8 +926,7 @@ impl App {
                     Err(mpsc::TryRecvError::Empty) => break,
                     Err(mpsc::TryRecvError::Disconnected) => {
                         self.multiplayer.status = ConnectionStatus::Failed;
-                        self.multiplayer.last_error =
-                            Some("canal de rede encerrado".to_string());
+                        self.multiplayer.last_error = Some("canal de rede encerrado".to_string());
                         self.multiplayer.network = None;
                         return;
                     }
@@ -894,14 +979,30 @@ impl App {
                 }
             }
             NetEvent::PeerDisconnected(peer) => {
-                self.multiplayer.status = ConnectionStatus::Failed;
                 self.multiplayer.active = false;
-                self.multiplayer.last_error = Some(format!("peer desconectado: {peer}"));
+                self.multiplayer.peer_name = None;
+                self.multiplayer.cursors.clear();
+                if self.multiplayer.role == MultiplayerRole::Host {
+                    self.multiplayer.status = ConnectionStatus::Ready;
+                    self.multiplayer.last_info = Some(format!("jogador saiu: {peer}"));
+                    self.multiplayer.last_error = None;
+                } else {
+                    self.multiplayer.status = ConnectionStatus::Failed;
+                    self.multiplayer.last_error = Some(format!("peer desconectado: {peer}"));
+                }
             }
             NetEvent::PeerTimeout(peer) => {
-                self.multiplayer.status = ConnectionStatus::Failed;
                 self.multiplayer.active = false;
-                self.multiplayer.last_error = Some(format!("tempo esgotado {peer}"));
+                self.multiplayer.peer_name = None;
+                self.multiplayer.cursors.clear();
+                if self.multiplayer.role == MultiplayerRole::Host {
+                    self.multiplayer.status = ConnectionStatus::Ready;
+                    self.multiplayer.last_info = Some(format!("tempo esgotado {peer}"));
+                    self.multiplayer.last_error = None;
+                } else {
+                    self.multiplayer.status = ConnectionStatus::Failed;
+                    self.multiplayer.last_error = Some(format!("tempo esgotado {peer}"));
+                }
             }
             NetEvent::PublicEndpointObserved(addr) => {
                 self.multiplayer.last_info = Some(format!("endpoint observado {addr}"));
@@ -942,6 +1043,16 @@ impl App {
                     }
                 }
                 self.ensure_cursor_slots();
+            }
+            NetMsg::Kick { reason } => {
+                if self.multiplayer.role != MultiplayerRole::Peer {
+                    return;
+                }
+                self.multiplayer.active = false;
+                self.multiplayer.status = ConnectionStatus::Failed;
+                self.multiplayer.last_error =
+                    Some(reason.unwrap_or_else(|| "expulso do lobby".to_string()));
+                self.multiplayer.shutdown_network();
             }
             NetMsg::SetMap { map_index } => {
                 if self.multiplayer.role != MultiplayerRole::Peer {
@@ -1213,6 +1324,7 @@ impl App {
         self.ui.hover_build_kind = None;
         self.ui.hover_button = None;
         self.ui.hover_map_select = None;
+        self.ui.hover_multiplayer = None;
         self.ui.viewport = MapViewport::default();
         self.ui.manual_pan = false;
         self.ui.drag_origin = None;
