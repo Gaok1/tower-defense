@@ -51,8 +51,8 @@ impl AutotuneConfig {
 
 #[derive(Debug)]
 pub struct AutotuneState {
-    pub config: AutotuneConfig,
-    pub metrics: PathMetrics,
+    config: AutotuneConfig,
+    metrics: PathMetrics,
 }
 
 impl AutotuneState {
@@ -64,6 +64,10 @@ impl AutotuneState {
             },
             config,
         }
+    }
+
+    pub fn config(&self) -> &AutotuneConfig {
+        &self.config
     }
 
     pub fn current_target(&self) -> u64 {

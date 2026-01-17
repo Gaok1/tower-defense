@@ -13,13 +13,13 @@ use quinn::{Endpoint, EndpointConfig, RecvStream, ServerConfig};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc as tokio_mpsc;
-use crate::p2p_connect::{self, EndpointOptions, ConnectOptions, ProbeOptions};
-
-use super::autotune::{AutotuneConfig, AutotuneState};
+use crate::p2p_connection::p2p_connect;
+use crate::p2p_connection::p2p_connect::autotune::{AutotuneConfig, AutotuneState};
 use super::commands::{NetCommand, NetEvent};
 use super::messages::{InboundFrame, WireMessage, decode_payload, spawn_send_task};
-use super::mobility::{ConnSignal, ConnectAttempt, ConnectResult, MobilityConfig, ReconnectState};
-use super::stun;
+use crate::p2p_connection::p2p_connect::mobility::{
+    ConnSignal, ConnectAttempt, ConnectResult, MobilityConfig, ReconnectState,
+};
 use super::transfer::{
     IncomingTransfer, SendOutcome, SendResult, handle_incoming_message, handle_incoming_stream,
     send_message,
@@ -36,22 +36,20 @@ fn build_endpoint(
     target_window: u64,
     autotune: &AutotuneConfig,
     evt_tx: Option<&Sender<NetEvent>>,
-) -> Result<(Endpoint, Vec<u8>, p2p_connect::StunOutcome), Box<dyn std::error::Error>> {
-    let mut opts = EndpointOptions::default();
-    opts.target_window = target_window;
-    opts.autotune = autotune.clone();
-    opts.stun_verbose_trace = p2p_connect::stun::stun_trace_enabled();
-
+) -> Result<(Endpoint, Vec<u8>, Result<Option<SocketAddr>, String>), Box<dyn std::error::Error>> {
     let mut logger = |line: String| {
         if let Some(tx) = evt_tx {
             let _ = tx.send(NetEvent::Log(line));
         }
     };
 
-    let build = p2p_connect::make_endpoint(bind_addr, &opts, Some(&mut logger))
-        .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
+    let mut log_cb: Option<&mut dyn FnMut(String)> = None;
+    if evt_tx.is_some() {
+        log_cb = Some(&mut logger);
+    }
 
-    Ok((build.endpoint, build.cert_der, build.stun))
+    let build = p2p_connect::make_endpoint(bind_addr, target_window, autotune, log_cb)?;
+    Ok(build)
 }
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -950,7 +948,13 @@ async fn handle_command(
             let evt_tx = evt_tx.clone();
             let connect_tx = connect_tx.clone();
             tokio::spawn(async move {
-                let connection = p2p_connect::connect_peer(&endpoint, addr, &evt_tx).await;
+                let connection = match p2p_connect::connect_peer(&endpoint, addr, CONNECT_TIMEOUT).await {
+                    Ok(conn) => Some(conn),
+                    Err(err) => {
+                        let _ = evt_tx.send(NetEvent::Log(format!("erro ao conectar {err}")));
+                        None
+                    }
+                };
                 let _ = connect_tx.send(ConnectResult {
                     id: attempt_id,
                     peer: addr,
@@ -973,7 +977,7 @@ async fn handle_command(
             } else {
                 let endpoint = endpoint.clone();
                 tokio::spawn(async move {
-                    let result = p2p_connect::quick_probe_peer(&endpoint, peer).await;
+                    let result = p2p_connect::quick_probe_peer(&endpoint, peer, PROBE_TIMEOUT).await;
                     match result {
                         Ok(duration) => {
                             let _ = evt_tx.send(NetEvent::ProbeFinished {
@@ -999,6 +1003,15 @@ async fn handle_command(
         NetCommand::Rebind(_) => {}
         NetCommand::CancelTransfers => {
             let _ = evt_tx.send(NetEvent::Log("cancelamento solicitado".to_string()));
+        }
+        NetCommand::GameMessage(payload) => {
+            if let Some(conn) = connection.as_ref() {
+                let _ = send_message(conn, &WireMessage::GameMessage(payload), evt_tx).await;
+            } else {
+                let _ = evt_tx.send(NetEvent::Log(
+                    "nenhum par conectado para enviar mensagens de jogo".to_string(),
+                ));
+            }
         }
         NetCommand::SendFiles(files) => {
             pending_cmds.push(NetCommand::SendFiles(files));
@@ -1225,7 +1238,7 @@ mod endpoint_tests {
             };
 
             let connect_fut = async {
-                p2p_connect::connect_peer(&mut client, server_addr, &evt_tx)
+                p2p_connect::connect_peer(&mut client, server_addr, Duration::from_secs(3))
                     .await
                     .expect("client connection")
             };
@@ -1236,52 +1249,6 @@ mod endpoint_tests {
             .await
             .expect("connect timeout");
         });
-    }
-}
-
-async fn p2p_connect::connect_peer(
-    endpoint: &Endpoint,
-    peer: SocketAddr,
-    evt_tx: &Sender<NetEvent>,
-) -> Option<quinn::Connection> {
-    match endpoint.connect(peer, "pasta") {
-        Ok(connecting) => match tokio::time::timeout(CONNECT_TIMEOUT, connecting).await {
-            Ok(Ok(connection)) => Some(connection),
-            Ok(Err(err)) => {
-                let _ = evt_tx.send(NetEvent::Log(format!("erro ao conectar {err}")));
-                None
-            }
-            Err(_) => {
-                let _ = evt_tx.send(NetEvent::Log(format!(
-                    "tempo esgotado ao conectar {peer} (verifique NAT/firewall)"
-                )));
-                None
-            }
-        },
-        Err(err) => {
-            let _ = evt_tx.send(NetEvent::Log(format!("erro ao iniciar conexao {err}")));
-            None
-        }
-    }
-}
-
-async fn p2p_connect::quick_probe_peer(endpoint: &Endpoint, peer: SocketAddr) -> Result<Duration, String> {
-    let started = Instant::now();
-    let connecting = endpoint
-        .connect(peer, "pasta")
-        .map_err(|err| format!("erro ao iniciar teste {err}"))?;
-
-    match tokio::time::timeout(PROBE_TIMEOUT, connecting).await {
-        Ok(Ok(connection)) => {
-            let elapsed = started.elapsed();
-            connection.close(0u32.into(), b"probe");
-            Ok(elapsed)
-        }
-        Ok(Err(err)) => Err(format!("erro ao conectar: {err}")),
-        Err(_) => Err(format!(
-            "sem resposta em {}s (firewall/NAT?)",
-            PROBE_TIMEOUT.as_secs()
-        )),
     }
 }
 
@@ -1310,6 +1277,9 @@ fn setup_connection_reader(
                                 from: connection.remote_address(),
                                 stream,
                             });
+                        }
+                        Ok(WireMessage::GameMessage(data)) => {
+                            let _ = evt_tx.send(NetEvent::GameMessage(data));
                         }
                         Ok(message) => {
                             let _ = inbound
@@ -1375,7 +1345,7 @@ async fn read_frame(stream: &mut quinn::RecvStream) -> io::Result<Option<Vec<u8>
 
 #[cfg(test)]
 mod tests {
-    use super::stun::stun_server_list;
+    use crate::p2p_connection::p2p_connect::stun::stun_server_list;
     use super::*;
     use crate::net::serialize_message;
 

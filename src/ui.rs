@@ -1244,10 +1244,9 @@ fn draw_multiplayer_menu(f: &mut Frame, app: &mut App, area: Rect) {
         IpMode::Ipv4 => "IPv4",
         IpMode::Ipv6 => "IPv6",
     };
-    let local_ip = app
-        .multiplayer
-        .local_ip
-        .clone()
+    let local_endpoint = app.multiplayer.local_endpoint;
+    let local_ip = local_endpoint
+        .map(|addr| addr.to_string())
         .unwrap_or_else(|| "detectando...".to_string());
     let status_text = match app.multiplayer.status {
         ConnectionStatus::Idle => "ocioso",
@@ -1271,10 +1270,12 @@ fn draw_multiplayer_menu(f: &mut Frame, app: &mut App, area: Rect) {
         focused == MultiplayerFocus::IpMode,
         true,
     ));
-    lines.push(Line::from(Span::styled(
-        format!(" Public IP (STUN): {local_ip}"),
-        Style::default().fg(text_dim()),
-    )));
+    lines.push(menu_line(
+        "Public IP (STUN)",
+        local_ip.as_str(),
+        focused == MultiplayerFocus::PublicIp,
+        local_endpoint.is_some(),
+    ));
     lines.push(menu_line(
         "Peer IP",
         if app.multiplayer.peer_ip.is_empty() {
@@ -1310,6 +1311,13 @@ fn draw_multiplayer_menu(f: &mut Frame, app: &mut App, area: Rect) {
         name_enabled,
     ));
 
+    if let Some(msg) = app.multiplayer.last_info.as_ref() {
+        lines.push(Line::from(Span::styled(
+            format!(" Info: {msg}"),
+            Style::default().fg(good()),
+        )));
+    }
+
     if let Some(err) = app.multiplayer.last_error.as_ref() {
         lines.push(Line::from(Span::styled(
             format!(" Erro: {err}"),
@@ -1326,7 +1334,7 @@ fn draw_multiplayer_menu(f: &mut Frame, app: &mut App, area: Rect) {
     );
 
     let footer = Paragraph::new(Line::from(Span::styled(
-        "Up/Down selecionar  •  Left/Right alternar  •  Enter confirmar  •  R atualizar STUN  •  Esc voltar",
+        "Up/Down selecionar  •  Left/Right alternar  •  Enter confirmar  •  C copiar IP  •  R atualizar STUN  •  Esc voltar",
         Style::default().fg(text_dim()),
     )))
     .alignment(Alignment::Center)
@@ -1505,6 +1513,14 @@ fn draw_load_game(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_map_select(f: &mut Frame, app: &mut App, area: Rect) {
+    let peer_locked = app.multiplayer.active && app.multiplayer.role == MultiplayerRole::Peer;
+    let help_nav = if peer_locked {
+        "host seleciona"
+    } else {
+        "navigate"
+    };
+    let help_play = if peer_locked { "aguarde" } else { "play" };
+
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1524,9 +1540,9 @@ fn draw_map_select(f: &mut Frame, app: &mut App, area: Rect) {
         ),
         Span::raw("  "),
         Span::styled("←/→", Style::default().fg(text_dim())),
-        Span::raw(" navigate  "),
+        Span::raw(format!(" {help_nav}  ")),
         Span::styled("Enter", Style::default().fg(text_dim())),
-        Span::raw(" play"),
+        Span::raw(format!(" {help_play}")),
     ]))
     .alignment(Alignment::Center)
     .block(panel_block("Map Browser"))
@@ -1558,18 +1574,33 @@ fn draw_map_select(f: &mut Frame, app: &mut App, area: Rect) {
         .constraints([Constraint::Length(3), Constraint::Length(2)])
         .split(footer_cols[1]);
 
-    let left_style = if app.ui.hover_map_select == Some(MapSelectAction::Prev) {
+    let left_style = if !peer_locked && app.ui.hover_map_select == Some(MapSelectAction::Prev) {
         Style::default().fg(Color::Black).bg(accent())
+    } else if peer_locked {
+        Style::default()
+            .fg(text_dim())
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::DIM)
     } else {
         Style::default().fg(Color::White).bg(Color::DarkGray)
     };
-    let right_style = if app.ui.hover_map_select == Some(MapSelectAction::Next) {
+    let right_style = if !peer_locked && app.ui.hover_map_select == Some(MapSelectAction::Next) {
         Style::default().fg(Color::Black).bg(accent())
+    } else if peer_locked {
+        Style::default()
+            .fg(text_dim())
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::DIM)
     } else {
         Style::default().fg(Color::White).bg(Color::DarkGray)
     };
-    let start_style = if app.ui.hover_map_select == Some(MapSelectAction::Start) {
+    let start_style = if !peer_locked && app.ui.hover_map_select == Some(MapSelectAction::Start) {
         Style::default().fg(Color::Black).bg(good())
+    } else if peer_locked {
+        Style::default()
+            .fg(text_dim())
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::DIM)
     } else {
         Style::default().fg(Color::White).bg(Color::DarkGray)
     };
@@ -1610,15 +1641,19 @@ fn draw_map_select(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(info, center_rows[0]);
 
     f.render_widget(
-        Paragraph::new(" Play ▶ ")
-            .alignment(Alignment::Center)
-            .style(start_style)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(panel_border())),
-            ),
+        Paragraph::new(if peer_locked {
+            " Host... "
+        } else {
+            " Play ▶ "
+        })
+        .alignment(Alignment::Center)
+        .style(start_style)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(panel_border())),
+        ),
         center_rows[1],
     );
     app.ui.hit.map_select_start = center_rows[1];

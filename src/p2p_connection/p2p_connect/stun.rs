@@ -334,7 +334,7 @@ fn detect_public_endpoint_on_socket_inner(
     }))
 }
 
-pub(crate) fn stun_server_list(bind_addr: SocketAddr) -> Vec<String> {
+pub fn stun_server_list(bind_addr: SocketAddr) -> Vec<String> {
     if stun_disabled() {
         return Vec::new();
     }
@@ -433,7 +433,7 @@ fn format_stun_resolve_error(server: &str, err: &io::Error) -> String {
     msg
 }
 
-pub(crate) fn stun_trace_enabled() -> bool {
+pub fn stun_trace_enabled() -> bool {
     let Ok(value) = std::env::var("PASTA_P2P_STUN_TRACE") else {
         return false;
     };

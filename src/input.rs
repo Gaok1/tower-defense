@@ -38,11 +38,21 @@ pub fn pump(app: &mut App) -> Result<()> {
                         _ => {}
                     },
                     KeyCode::Enter => match app.multiplayer.focus {
+                        crate::app::MultiplayerFocus::PublicIp => app.multiplayer_copy_public_ip(),
                         crate::app::MultiplayerFocus::Connect => app.multiplayer_connect(),
                         crate::app::MultiplayerFocus::Continue => app.multiplayer_continue(),
                         _ => {}
                     },
                     KeyCode::Backspace => app.multiplayer_backspace(),
+                    KeyCode::Char('c')
+                        if !matches!(
+                            app.multiplayer.focus,
+                            crate::app::MultiplayerFocus::PeerIp
+                                | crate::app::MultiplayerFocus::Name
+                        ) =>
+                    {
+                        app.multiplayer_copy_public_ip()
+                    }
                     KeyCode::Char('r')
                         if !matches!(
                             app.multiplayer.focus,
@@ -144,10 +154,7 @@ pub fn pump(app: &mut App) -> Result<()> {
                             app.game.selected_cell = Some(cell);
                             if app.can_build_at(cell.0, cell.1, kind) {
                                 if app.game.pending_build == Some(cell) {
-                                    if app.build_at(cell.0, cell.1, kind) {
-                                        app.game.build_kind = None;
-                                        app.game.pending_build = None;
-                                    }
+                                    app.handle_button(ButtonId::Build);
                                 } else {
                                     app.game.pending_build = Some(cell);
                                 }

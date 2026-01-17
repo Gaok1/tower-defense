@@ -1,13 +1,21 @@
 use crate::{
     fx::{FxManager, Vec2i},
+    net_msg::{GameSnapshot, NetCmd, NetMsg},
+    p2p_connection::{AutotuneConfig, NetCommand, NetEvent, start_network},
     save,
 };
 use ratatui::layout::Rect;
+use serde::{Deserialize, Serialize};
+use serde_json::{from_slice, to_vec};
 use std::{
+    io::Write,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    process::{Command, Stdio},
     sync::mpsc,
+    thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutMode {
@@ -40,6 +48,7 @@ pub enum IpMode {
 pub enum MultiplayerFocus {
     Role,
     IpMode,
+    PublicIp,
     PeerIp,
     Connect,
     Name,
@@ -63,12 +72,12 @@ pub struct PlayerCursor {
     pub y: u16,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct MultiplayerState {
     pub active: bool,
     pub role: MultiplayerRole,
     pub ip_mode: IpMode,
-    pub local_ip: Option<String>,
+    pub local_endpoint: Option<SocketAddr>,
     pub peer_ip: String,
     pub status: ConnectionStatus,
     pub focus: MultiplayerFocus,
@@ -76,8 +85,10 @@ pub struct MultiplayerState {
     pub player_name: Option<String>,
     pub peer_name: Option<String>,
     pub last_error: Option<String>,
+    pub last_info: Option<String>,
     pub cursors: Vec<PlayerCursor>,
-    pub stun_rx: Option<std::sync::mpsc::Receiver<Result<Option<SocketAddr>, String>>>,
+    pub network: Option<MultiplayerNetwork>,
+    pub next_cmd_id: u32,
 }
 
 impl MultiplayerState {
@@ -86,7 +97,7 @@ impl MultiplayerState {
             active: false,
             role: MultiplayerRole::Host,
             ip_mode: IpMode::Ipv4,
-            local_ip: None,
+            local_endpoint: None,
             peer_ip: String::new(),
             status: ConnectionStatus::Idle,
             focus: MultiplayerFocus::Role,
@@ -94,10 +105,81 @@ impl MultiplayerState {
             player_name: None,
             peer_name: None,
             last_error: None,
+            last_info: None,
             cursors: Vec::new(),
-            stun_rx: None,
+            network: None,
+            next_cmd_id: 1,
         }
     }
+
+    fn current_bind_addr(&self) -> SocketAddr {
+        let bind_ip = match self.ip_mode {
+            IpMode::Ipv4 => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            IpMode::Ipv6 => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+        };
+        SocketAddr::new(bind_ip, 0)
+    }
+
+    fn ensure_network(&mut self) {
+        let bind_addr = self.current_bind_addr();
+        if let Some(net) = self.network.as_mut() {
+            if net.bind_addr == bind_addr {
+                return;
+            }
+            let _ = net.cmd_tx.send(NetCommand::Rebind(bind_addr));
+            net.bind_addr = bind_addr;
+            return;
+        }
+
+        let autotune = AutotuneConfig::default();
+        let (cmd_tx, evt_rx, handle) = start_network(bind_addr, None, autotune);
+        self.network = Some(MultiplayerNetwork {
+            cmd_tx,
+            evt_rx,
+            handle,
+            bind_addr,
+        });
+    }
+
+    fn shutdown_network(&mut self) {
+        if let Some(network) = self.network.take() {
+            let _ = network.cmd_tx.send(NetCommand::Shutdown);
+            let _ = network.handle.join();
+        }
+    }
+
+    fn send_net_command(&mut self, cmd: NetCommand) -> Result<(), String> {
+        if let Some(net) = self.network.as_mut() {
+            net.cmd_tx
+                .send(cmd)
+                .map_err(|_| "conexao multiplayer encerrada".to_string())
+        } else {
+            Err("rede multiplayer inativa".to_string())
+        }
+    }
+
+    fn queue_game_msg(&mut self, msg: &NetMsg) -> Result<(), String> {
+        let payload = to_vec(msg).map_err(|e| e.to_string())?;
+        self.send_net_command(NetCommand::GameMessage(payload))
+    }
+
+    fn refresh_network(&mut self) {
+        let bind_addr = self.current_bind_addr();
+        if let Some(net) = self.network.as_mut() {
+            net.bind_addr = bind_addr;
+            let _ = net.cmd_tx.send(NetCommand::Rebind(bind_addr));
+        } else {
+            self.ensure_network();
+        }
+    }
+}
+
+#[derive(Debug)]
+struct MultiplayerNetwork {
+    cmd_tx: UnboundedSender<NetCommand>,
+    evt_rx: mpsc::Receiver<NetEvent>,
+    handle: thread::JoinHandle<()>,
+    bind_addr: SocketAddr,
 }
 
 pub const TOWER_KIND_COUNT: usize = 6;
@@ -204,7 +286,7 @@ pub struct UiState {
     pub drag_view: Option<(u16, u16)>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TowerKind {
     Basic,
     Sniper,
@@ -214,7 +296,7 @@ pub enum TowerKind {
     Frost,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Tower {
     pub x: u16,
     pub y: u16,
@@ -223,7 +305,7 @@ pub struct Tower {
     pub cooldown: u16, // ticks até poder atirar
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Enemy {
     pub path_i: usize,
     pub hp: i32,
@@ -410,7 +492,7 @@ impl App {
     pub fn enter_multiplayer_menu(&mut self) {
         self.multiplayer = MultiplayerState::new();
         self.multiplayer.status = ConnectionStatus::FetchingIp;
-        self.refresh_multiplayer_ip();
+        self.multiplayer.ensure_network();
         self.screen = Screen::Multiplayer;
     }
 
@@ -438,10 +520,12 @@ impl App {
         match self.main_menu_index {
             0 => {
                 self.multiplayer.active = false;
+                self.multiplayer.shutdown_network();
                 self.screen = Screen::MapSelect;
             }
             1 => {
                 self.multiplayer.active = false;
+                self.multiplayer.shutdown_network();
                 self.enter_load_game();
             }
             2 => self.enter_multiplayer_menu(),
@@ -452,11 +536,13 @@ impl App {
     pub fn enter_main_menu(&mut self) {
         self.screen = Screen::MainMenu;
         self.multiplayer.active = false;
+        self.multiplayer.shutdown_network();
         self.multiplayer.cursors.clear();
     }
 
     pub fn enter_load_game(&mut self) {
         self.multiplayer.active = false;
+        self.multiplayer.shutdown_network();
         self.refresh_load_menu();
         self.screen = Screen::LoadGame;
     }
@@ -554,7 +640,8 @@ impl App {
         self.multiplayer.focus = match self.multiplayer.focus {
             MultiplayerFocus::Role => MultiplayerFocus::Continue,
             MultiplayerFocus::IpMode => MultiplayerFocus::Role,
-            MultiplayerFocus::PeerIp => MultiplayerFocus::IpMode,
+            MultiplayerFocus::PublicIp => MultiplayerFocus::IpMode,
+            MultiplayerFocus::PeerIp => MultiplayerFocus::PublicIp,
             MultiplayerFocus::Connect => MultiplayerFocus::PeerIp,
             MultiplayerFocus::Name => MultiplayerFocus::Connect,
             MultiplayerFocus::Continue => MultiplayerFocus::Name,
@@ -564,7 +651,8 @@ impl App {
     pub fn multiplayer_focus_next(&mut self) {
         self.multiplayer.focus = match self.multiplayer.focus {
             MultiplayerFocus::Role => MultiplayerFocus::IpMode,
-            MultiplayerFocus::IpMode => MultiplayerFocus::PeerIp,
+            MultiplayerFocus::IpMode => MultiplayerFocus::PublicIp,
+            MultiplayerFocus::PublicIp => MultiplayerFocus::PeerIp,
             MultiplayerFocus::PeerIp => MultiplayerFocus::Connect,
             MultiplayerFocus::Connect => MultiplayerFocus::Name,
             MultiplayerFocus::Name => MultiplayerFocus::Continue,
@@ -585,41 +673,79 @@ impl App {
             IpMode::Ipv6 => IpMode::Ipv4,
         };
         self.multiplayer.status = ConnectionStatus::FetchingIp;
-        self.multiplayer.local_ip = None;
+        self.multiplayer.local_endpoint = None;
         self.multiplayer.last_error = None;
-        self.refresh_multiplayer_ip();
+        self.multiplayer.last_info = None;
+        self.multiplayer.refresh_network();
     }
 
     pub fn multiplayer_refresh_ip(&mut self) {
         self.multiplayer.status = ConnectionStatus::FetchingIp;
-        self.multiplayer.local_ip = None;
+        self.multiplayer.local_endpoint = None;
         self.multiplayer.last_error = None;
-        self.refresh_multiplayer_ip();
+        self.multiplayer.last_info = None;
+        self.multiplayer.refresh_network();
+    }
+
+    pub fn multiplayer_copy_public_ip(&mut self) {
+        self.multiplayer.last_error = None;
+        self.multiplayer.last_info = None;
+
+        let Some(endpoint) = self.multiplayer.local_endpoint.as_ref() else {
+            self.multiplayer.last_error = Some("IP publico ainda nao detectado".to_string());
+            return;
+        };
+
+        let endpoint_text = endpoint.to_string();
+        match copy_to_clipboard(&endpoint_text) {
+            Ok(()) => {
+                self.multiplayer.last_info = Some("IP copiado para o clipboard".to_string());
+            }
+            Err(e) => {
+                self.multiplayer.last_error = Some(format!("falha ao copiar IP: {e}"));
+            }
+        }
     }
 
     pub fn multiplayer_connect(&mut self) {
-        if self.multiplayer.peer_ip.trim().is_empty() {
-            self.multiplayer.status = ConnectionStatus::Failed;
-            self.multiplayer.last_error = Some("IP do peer vazio".to_string());
-            return;
-        }
-
-        self.multiplayer.status = ConnectionStatus::Connecting;
+        self.multiplayer.active = false;
         self.multiplayer.last_error = None;
+        self.multiplayer.last_info = None;
+        self.multiplayer.ensure_network();
 
-        let parsed = self.parse_peer_addr();
-        match parsed {
-            Some(_) => {
-                self.multiplayer.status = ConnectionStatus::Connected;
-                self.multiplayer.active = true;
-                if self.multiplayer.peer_name.is_none() {
-                    self.multiplayer.peer_name = Some("Peer".to_string());
-                }
-                self.ensure_cursor_slots();
+        match self.multiplayer.role {
+            MultiplayerRole::Host => {
+                self.multiplayer.status = ConnectionStatus::Connecting;
+                let info = self
+                    .multiplayer
+                    .local_endpoint
+                    .map(|addr| format!("aguardando conexao em {addr}"))
+                    .unwrap_or_else(|| "aguardando conexao".to_string());
+                self.multiplayer.last_info = Some(info);
             }
-            None => {
-                self.multiplayer.status = ConnectionStatus::Failed;
-                self.multiplayer.last_error = Some("IP do peer invalido".to_string());
+            MultiplayerRole::Peer => {
+                if self.multiplayer.peer_ip.trim().is_empty() {
+                    self.multiplayer.status = ConnectionStatus::Failed;
+                    self.multiplayer.last_error = Some("IP do host vazio".to_string());
+                    return;
+                }
+
+                let Some(addr) = self.parse_peer_addr() else {
+                    self.multiplayer.status = ConnectionStatus::Failed;
+                    self.multiplayer.last_error = Some("IP do host invalido".to_string());
+                    return;
+                };
+
+                if let Err(err) = self
+                    .multiplayer
+                    .send_net_command(NetCommand::ConnectPeer(addr))
+                {
+                    self.multiplayer.status = ConnectionStatus::Failed;
+                    self.multiplayer.last_error = Some(err);
+                    return;
+                }
+                self.multiplayer.status = ConnectionStatus::Connecting;
+                self.multiplayer.last_info = Some(format!("conectando em {addr}"));
             }
         }
     }
@@ -630,10 +756,21 @@ impl App {
         }
         if self.multiplayer.name_input.trim().is_empty() {
             self.multiplayer.last_error = Some("defina o nome do player".to_string());
+            self.multiplayer.last_info = None;
             return;
         }
         self.multiplayer.player_name = Some(self.multiplayer.name_input.trim().to_string());
         self.multiplayer.last_error = None;
+        self.multiplayer.last_info = None;
+
+        let msg = NetMsg::Hello {
+            name: self.multiplayer.name_input.trim().to_string(),
+        };
+        if let Err(err) = self.multiplayer.queue_game_msg(&msg) {
+            self.multiplayer.status = ConnectionStatus::Failed;
+            self.multiplayer.last_error = Some(err);
+            return;
+        }
         self.screen = Screen::MapSelect;
     }
 
@@ -690,52 +827,308 @@ impl App {
         self.selected_slot_waves_len().saturating_sub(1)
     }
 
-    fn refresh_multiplayer_ip(&mut self) {
-        let bind_addr = match self.multiplayer.ip_mode {
-            IpMode::Ipv4 => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
-            IpMode::Ipv6 => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
-        };
+    fn poll_network_events(&mut self) {
+        loop {
+            let event = {
+                let net = match self.multiplayer.network.as_mut() {
+                    Some(net) => net,
+                    None => return,
+                };
 
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let res = crate::stun::detect_public_endpoint(bind_addr);
-            let _ = tx.send(res);
-        });
-        self.multiplayer.stun_rx = Some(rx);
-    }
-
-    fn poll_multiplayer_ip(&mut self) {
-        let Some(rx) = self.multiplayer.stun_rx.as_ref() else {
-            return;
-        };
-
-        match rx.try_recv() {
-            Ok(result) => {
-                self.multiplayer.stun_rx = None;
-                match result {
-                    Ok(Some(addr)) => {
-                        self.multiplayer.local_ip = Some(addr.ip().to_string());
-                        self.multiplayer.status = ConnectionStatus::Ready;
-                    }
-                    Ok(None) => {
-                        self.multiplayer.local_ip = None;
+                match net.evt_rx.try_recv() {
+                    Ok(event) => event,
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
                         self.multiplayer.status = ConnectionStatus::Failed;
                         self.multiplayer.last_error =
-                            Some("STUN nao retornou endpoint".to_string());
+                            Some("canal de rede encerrado".to_string());
+                        self.multiplayer.network = None;
+                        return;
                     }
-                    Err(err) => {
-                        self.multiplayer.local_ip = None;
+                }
+            };
+
+            self.handle_net_event(event);
+        }
+    }
+
+    fn handle_net_event(&mut self, event: NetEvent) {
+        match event {
+            NetEvent::Bound(addr) => {
+                self.multiplayer.last_info = Some(format!("ouvindo {addr}"));
+            }
+            NetEvent::PublicEndpoint(addr) => {
+                self.multiplayer.local_endpoint = Some(addr);
+                if self.multiplayer.status == ConnectionStatus::FetchingIp {
+                    self.multiplayer.status = ConnectionStatus::Ready;
+                    self.multiplayer.last_info = Some(format!("IP publico {addr}"));
+                }
+            }
+            NetEvent::PeerConnecting(peer) => {
+                self.multiplayer.last_info = Some(format!("conectando em {peer}"));
+            }
+            NetEvent::PeerConnected(peer) => {
+                self.multiplayer.status = ConnectionStatus::Connected;
+                self.multiplayer.active = true;
+                self.multiplayer.last_error = None;
+                self.multiplayer.last_info = Some(format!("peer conectado: {peer}"));
+                self.ensure_cursor_slots();
+
+                if self.multiplayer.role == MultiplayerRole::Host {
+                    let hello = NetMsg::Hello {
+                        name: self.multiplayer.name_input.trim().to_string(),
+                    };
+                    if let Err(err) = self.multiplayer.queue_game_msg(&hello) {
                         self.multiplayer.status = ConnectionStatus::Failed;
                         self.multiplayer.last_error = Some(err);
+                        return;
+                    }
+                    let set_map = NetMsg::SetMap {
+                        map_index: self.map_index,
+                    };
+                    if let Err(err) = self.multiplayer.queue_game_msg(&set_map) {
+                        self.multiplayer.status = ConnectionStatus::Failed;
+                        self.multiplayer.last_error = Some(err);
+                        return;
                     }
                 }
             }
-            Err(mpsc::TryRecvError::Empty) => {}
-            Err(mpsc::TryRecvError::Disconnected) => {
-                self.multiplayer.stun_rx = None;
+            NetEvent::PeerDisconnected(peer) => {
                 self.multiplayer.status = ConnectionStatus::Failed;
-                self.multiplayer.last_error = Some("STUN desconectado".to_string());
+                self.multiplayer.active = false;
+                self.multiplayer.last_error = Some(format!("peer desconectado: {peer}"));
             }
+            NetEvent::PeerTimeout(peer) => {
+                self.multiplayer.status = ConnectionStatus::Failed;
+                self.multiplayer.active = false;
+                self.multiplayer.last_error = Some(format!("tempo esgotado {peer}"));
+            }
+            NetEvent::PublicEndpointObserved(addr) => {
+                self.multiplayer.last_info = Some(format!("endpoint observado {addr}"));
+            }
+            NetEvent::Log(msg) => {
+                if msg.to_lowercase().contains("erro") {
+                    self.multiplayer.last_error = Some(msg);
+                    if self.multiplayer.status == ConnectionStatus::FetchingIp {
+                        self.multiplayer.status = ConnectionStatus::Failed;
+                    }
+                } else {
+                    self.multiplayer.last_info = Some(msg);
+                }
+            }
+            NetEvent::GameMessage(msg) => match from_slice(&msg) {
+                Ok(net_msg) => self.handle_net_msg(net_msg),
+                Err(err) => {
+                    self.multiplayer.last_error =
+                        Some(format!("falha ao decodificar mensagem: {err}"));
+                }
+            },
+            _ => {}
+        }
+    }
+
+    fn handle_net_msg(&mut self, msg: NetMsg) {
+        match msg {
+            NetMsg::Hello { name } => {
+                if name.trim().is_empty() {
+                    return;
+                }
+                match self.multiplayer.role {
+                    MultiplayerRole::Host => {
+                        self.multiplayer.peer_name = Some(name);
+                    }
+                    MultiplayerRole::Peer => {
+                        self.multiplayer.peer_name = Some(name);
+                    }
+                }
+                self.ensure_cursor_slots();
+            }
+            NetMsg::SetMap { map_index } => {
+                if self.multiplayer.role != MultiplayerRole::Peer {
+                    return;
+                }
+                if self.maps.is_empty() {
+                    return;
+                }
+                self.map_index = map_index.min(self.maps.len().saturating_sub(1));
+            }
+            NetMsg::StartGame { map_index } => {
+                if self.multiplayer.role != MultiplayerRole::Peer {
+                    return;
+                }
+                self.start_multiplayer_game_from_host(map_index);
+            }
+            NetMsg::Cursor { name, x, y } => {
+                if !self.multiplayer.active {
+                    return;
+                }
+                self.ensure_cursor_slots();
+                if self.multiplayer.role == MultiplayerRole::Host {
+                    if let Some(peer) = self.multiplayer.cursors.get_mut(1) {
+                        peer.name = name;
+                        peer.x = x;
+                        peer.y = y;
+                    }
+                } else if let Some(peer) = self.multiplayer.cursors.get_mut(1) {
+                    peer.name = name;
+                    peer.x = x;
+                    peer.y = y;
+                }
+            }
+            NetMsg::Cmd { id, cmd } => {
+                if self.multiplayer.role != MultiplayerRole::Host {
+                    return;
+                }
+                let res = self.apply_net_cmd(cmd);
+                let (ok, error) = match res {
+                    Ok(()) => (true, None),
+                    Err(e) => (false, Some(e)),
+                };
+                let result_msg = NetMsg::CmdResult { id, ok, error };
+                if let Err(err) = self.multiplayer.queue_game_msg(&result_msg) {
+                    self.multiplayer.status = ConnectionStatus::Failed;
+                    self.multiplayer.last_error = Some(err);
+                }
+            }
+            NetMsg::CmdResult { id: _, ok, error } => {
+                if self.multiplayer.role != MultiplayerRole::Peer {
+                    return;
+                }
+                if ok {
+                    self.multiplayer.last_error = None;
+                } else {
+                    self.multiplayer.last_error =
+                        Some(error.unwrap_or_else(|| "falha".to_string()));
+                }
+            }
+            NetMsg::State { state } => {
+                if self.multiplayer.role != MultiplayerRole::Peer {
+                    return;
+                }
+                self.apply_snapshot(state);
+            }
+        }
+    }
+
+    fn apply_net_cmd(&mut self, cmd: NetCmd) -> Result<(), String> {
+        if self.screen != Screen::Game {
+            return Err("host ainda nao iniciou o jogo".to_string());
+        }
+
+        match cmd {
+            NetCmd::TogglePause => {
+                self.game.running = !self.game.running;
+                Ok(())
+            }
+            NetCmd::CycleSpeed => {
+                self.cycle_speed();
+                Ok(())
+            }
+            NetCmd::Build { x, y, kind } => {
+                if self.build_at(x, y, kind) {
+                    self.multiplayer.last_error = None;
+                    Ok(())
+                } else {
+                    Err("nao foi possivel construir".to_string())
+                }
+            }
+            NetCmd::Upgrade { x, y } => {
+                let Some(idx) = self.tower_index_at(x, y) else {
+                    return Err("sem torre para upgrade".to_string());
+                };
+                let cost = Self::tower_upgrade_cost(self.game.towers[idx].kind);
+                if !self.dev_mode && self.game.money < cost {
+                    return Err("dinheiro insuficiente".to_string());
+                }
+                if self.game.towers[idx].level >= 9 {
+                    return Err("torre no max".to_string());
+                }
+                if !self.dev_mode {
+                    self.game.money -= cost;
+                }
+                self.game.towers[idx].level += 1;
+                Ok(())
+            }
+            NetCmd::Sell { x, y } => {
+                let Some(idx) = self.tower_index_at(x, y) else {
+                    return Err("sem torre para vender".to_string());
+                };
+                self.game.towers.remove(idx);
+                if !self.dev_mode {
+                    self.game.money = self.game.money.saturating_add(20);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn snapshot_game(&self) -> GameSnapshot {
+        GameSnapshot {
+            running: self.game.running,
+            speed: self.game.speed,
+            money: self.game.money,
+            lives: self.game.lives,
+            wave: self.game.wave,
+            towers: self.game.towers.clone(),
+            enemies: self.game.enemies.clone(),
+        }
+    }
+
+    fn apply_snapshot(&mut self, state: GameSnapshot) {
+        let selected_cell = self.game.selected_cell;
+        let build_kind = self.game.build_kind;
+        let pending_build = self.game.pending_build;
+
+        self.game.running = state.running;
+        self.game.speed = state.speed;
+        self.game.money = state.money;
+        self.game.lives = state.lives;
+        self.game.wave = state.wave;
+        self.game.towers = state.towers;
+        self.game.enemies = state.enemies;
+
+        self.game.selected_cell = selected_cell;
+        self.game.build_kind = build_kind;
+        self.game.pending_build = pending_build;
+    }
+
+    fn send_multiplayer_cursor(&mut self) {
+        if !self.multiplayer.active {
+            return;
+        }
+        let (x, y) = self.game.selected_cell.unwrap_or((0, 0));
+        let name = self
+            .multiplayer
+            .player_name
+            .clone()
+            .unwrap_or_else(|| self.multiplayer.name_input.clone())
+            .trim()
+            .to_string();
+        let name = if name.is_empty() {
+            "Player".to_string()
+        } else {
+            name
+        };
+        if let Err(err) = self
+            .multiplayer
+            .queue_game_msg(&NetMsg::Cursor { name, x, y })
+        {
+            self.multiplayer.status = ConnectionStatus::Failed;
+            self.multiplayer.last_error = Some(err);
+        }
+    }
+
+    fn send_multiplayer_state(&mut self) {
+        if !self.multiplayer.active || self.multiplayer.role != MultiplayerRole::Host {
+            return;
+        }
+        let snap = self.snapshot_game();
+        if let Err(err) = self
+            .multiplayer
+            .queue_game_msg(&NetMsg::State { state: snap })
+        {
+            self.multiplayer.status = ConnectionStatus::Failed;
+            self.multiplayer.last_error = Some(err);
         }
     }
 
@@ -747,12 +1140,7 @@ impl App {
         if let Ok(addr) = peer.parse::<SocketAddr>() {
             return Some(addr);
         }
-        let with_port = if peer.contains(':') && !peer.contains(']') && !peer.contains('.') {
-            format!("[{peer}]:0")
-        } else {
-            format!("{peer}:0")
-        };
-        with_port.parse::<SocketAddr>().ok()
+        None
     }
 
     fn ensure_cursor_slots(&mut self) {
@@ -762,29 +1150,40 @@ impl App {
         }
 
         if self.multiplayer.cursors.is_empty() {
-            if let Some(name) = self
-                .multiplayer
-                .player_name
-                .clone()
-                .or_else(|| Some("Player".to_string()))
-            {
-                let (x, y) = self.game.selected_cell.unwrap_or((0, 0));
-                self.multiplayer.cursors.push(PlayerCursor { name, x, y });
-            }
-        }
-
-        if self.multiplayer.cursors.len() < 2 {
-            let peer_name = self
-                .multiplayer
-                .peer_name
-                .clone()
-                .unwrap_or_else(|| "Peer".to_string());
             let (x, y) = self.game.selected_cell.unwrap_or((0, 0));
             self.multiplayer.cursors.push(PlayerCursor {
-                name: peer_name,
+                name: "Player".to_string(),
                 x,
                 y,
             });
+        }
+
+        if self.multiplayer.cursors.len() == 1 {
+            self.multiplayer.cursors.push(PlayerCursor {
+                name: "Peer".to_string(),
+                x: 0,
+                y: 0,
+            });
+        }
+
+        if let Some(local) = self.multiplayer.cursors.first_mut() {
+            if let Some((x, y)) = self.game.selected_cell {
+                local.x = x;
+                local.y = y;
+            }
+            if let Some(name) = self.multiplayer.player_name.as_ref() {
+                if !name.trim().is_empty() {
+                    local.name = name.clone();
+                }
+            }
+        }
+
+        if let Some(peer) = self.multiplayer.cursors.get_mut(1) {
+            if let Some(name) = self.multiplayer.peer_name.as_ref() {
+                if !name.trim().is_empty() {
+                    peer.name = name.clone();
+                }
+            }
         }
     }
 
@@ -899,17 +1298,47 @@ impl App {
     pub fn on_tick_if_due(&mut self) {
         if self.last_tick.elapsed() >= self.tick_rate {
             self.last_tick = Instant::now();
-            self.poll_multiplayer_ip();
+            self.poll_network_events();
             if self.screen == Screen::Game {
                 self.update_multiplayer_cursors();
-                self.on_tick();
+                if !(self.multiplayer.active && self.is_multiplayer_peer()) {
+                    self.on_tick();
+                    self.send_multiplayer_state();
+                } else {
+                    self.tick_fx();
+                }
+                self.send_multiplayer_cursor();
             } else {
                 self.tick_fx();
+                self.send_multiplayer_cursor();
             }
         }
     }
 
     pub fn handle_button(&mut self, id: ButtonId) {
+        if self.is_multiplayer_peer() {
+            if self.multiplayer.status != ConnectionStatus::Connected {
+                self.multiplayer.last_error = Some("sem conexao".to_string());
+                return;
+            }
+            let cmd_option = match id {
+                ButtonId::StartPause => Some(NetCmd::TogglePause),
+                ButtonId::Speed => Some(NetCmd::CycleSpeed),
+                ButtonId::Quit => {
+                    self.should_quit = true;
+                    return;
+                }
+                _ => None,
+            };
+            if let Some(cmd_variant) = cmd_option {
+                if let Err(err) = self.send_player_cmd(cmd_variant) {
+                    self.multiplayer.status = ConnectionStatus::Failed;
+                    self.multiplayer.last_error = Some(err);
+                }
+                return;
+            }
+        }
+
         match id {
             ButtonId::StartPause => self.game.running = !self.game.running,
             ButtonId::Build => self.try_build(),
@@ -1521,10 +1950,21 @@ impl App {
         if self.maps.is_empty() {
             return;
         }
+        if self.multiplayer.active && self.multiplayer.role == MultiplayerRole::Peer {
+            return;
+        }
         if self.map_index == 0 {
             self.map_index = self.maps.len() - 1;
         } else {
             self.map_index -= 1;
+        }
+        if self.multiplayer.active && self.multiplayer.role == MultiplayerRole::Host {
+            if let Err(err) = self.multiplayer.queue_game_msg(&NetMsg::SetMap {
+                map_index: self.map_index,
+            }) {
+                self.multiplayer.status = ConnectionStatus::Failed;
+                self.multiplayer.last_error = Some(err);
+            }
         }
     }
 
@@ -1532,11 +1972,56 @@ impl App {
         if self.maps.is_empty() {
             return;
         }
+        if self.multiplayer.active && self.multiplayer.role == MultiplayerRole::Peer {
+            return;
+        }
         self.map_index = (self.map_index + 1) % self.maps.len();
+        if self.multiplayer.active && self.multiplayer.role == MultiplayerRole::Host {
+            if let Err(err) = self.multiplayer.queue_game_msg(&NetMsg::SetMap {
+                map_index: self.map_index,
+            }) {
+                self.multiplayer.status = ConnectionStatus::Failed;
+                self.multiplayer.last_error = Some(err);
+            }
+        }
     }
 
     pub fn start_selected_map(&mut self) {
-        let map = self.selected_map().clone();
+        if self.multiplayer.active && self.multiplayer.role == MultiplayerRole::Peer {
+            self.multiplayer.last_error = Some("somente o host inicia a partida".to_string());
+            self.multiplayer.last_info = None;
+            return;
+        }
+
+        if self.multiplayer.active && self.multiplayer.role == MultiplayerRole::Host {
+            if let Err(err) = self.multiplayer.queue_game_msg(&NetMsg::StartGame {
+                map_index: self.map_index,
+            }) {
+                self.multiplayer.status = ConnectionStatus::Failed;
+                self.multiplayer.last_error = Some(err);
+            }
+        }
+
+        self.start_map_impl(self.map_index, true, true);
+
+        if self.multiplayer.active && self.multiplayer.role == MultiplayerRole::Host {
+            self.send_multiplayer_state();
+        }
+    }
+
+    fn start_multiplayer_game_from_host(&mut self, map_index: usize) {
+        if self.maps.is_empty() {
+            return;
+        }
+        self.map_index = map_index.min(self.maps.len().saturating_sub(1));
+        self.start_map_impl(self.map_index, false, false);
+    }
+
+    fn start_map_impl(&mut self, map_index: usize, create_save: bool, spawn_wave: bool) {
+        if self.maps.is_empty() || map_index >= self.maps.len() {
+            return;
+        }
+        let map = self.maps[map_index].clone();
         let selected_cell = Self::first_buildable(map.grid_w, map.grid_h, &map.path);
 
         self.game = GameState {
@@ -1571,56 +2056,73 @@ impl App {
         self.reset_ui_for_game();
         self.screen = Screen::Game;
 
-        match save::create_new_slot(&self.game.map_name, self.dev_mode) {
-            Ok(id) => {
-                self.save_slot = Some(id);
-                self.last_save_error = None;
+        if create_save {
+            match save::create_new_slot(&self.game.map_name, self.dev_mode) {
+                Ok(id) => {
+                    self.save_slot = Some(id);
+                    self.last_save_error = None;
+                }
+                Err(e) => {
+                    self.save_slot = None;
+                    self.last_save_error = Some(e.to_string());
+                }
             }
-            Err(e) => {
-                self.save_slot = None;
-                self.last_save_error = Some(e.to_string());
-            }
+        } else {
+            self.save_slot = None;
+            self.last_save_error = None;
         }
 
-        self.spawn_wave();
+        if spawn_wave {
+            self.spawn_wave();
+        }
     }
 
     fn is_multiplayer_peer(&self) -> bool {
         self.multiplayer.active && self.multiplayer.role == MultiplayerRole::Peer
     }
 
+    fn send_player_cmd(&mut self, cmd: NetCmd) -> Result<(), String> {
+        if self.multiplayer.status != ConnectionStatus::Connected {
+            return Err("sem conexao".to_string());
+        }
+        let id = self.multiplayer.next_cmd_id;
+        self.multiplayer.next_cmd_id = self.multiplayer.next_cmd_id.saturating_add(1);
+        self.multiplayer.queue_game_msg(&NetMsg::Cmd { id, cmd })
+    }
+
     fn request_build_at(&mut self, x: u16, y: u16, kind: TowerKind) {
-        if self.build_at(x, y, kind) {
-            self.multiplayer.last_error = None;
-            self.game.build_kind = None;
-            self.game.selected_cell = Some((x, y));
-        } else {
-            self.multiplayer.last_error = Some("host recusou a construcao".to_string());
+        match self.send_player_cmd(NetCmd::Build { x, y, kind }) {
+            Ok(()) => {
+                self.multiplayer.last_error = None;
+                self.multiplayer.last_info = None;
+                self.game.build_kind = None;
+                self.game.pending_build = None;
+                self.game.selected_cell = Some((x, y));
+            }
+            Err(e) => {
+                self.multiplayer.last_error = Some(e);
+            }
         }
     }
 
-    fn request_upgrade(&mut self, idx: usize) {
-        let cost = Self::tower_upgrade_cost(self.game.towers[idx].kind);
-        if !self.dev_mode && self.game.money < cost {
-            self.multiplayer.last_error = Some("host recusou o upgrade".to_string());
-            return;
+    fn request_upgrade_at(&mut self, x: u16, y: u16) {
+        match self.send_player_cmd(NetCmd::Upgrade { x, y }) {
+            Ok(()) => {
+                self.multiplayer.last_error = None;
+                self.multiplayer.last_info = None;
+            }
+            Err(e) => self.multiplayer.last_error = Some(e),
         }
-        if self.game.towers[idx].level >= 9 {
-            return;
-        }
-        if !self.dev_mode {
-            self.game.money -= cost;
-        }
-        self.game.towers[idx].level += 1;
-        self.multiplayer.last_error = None;
     }
 
-    fn request_sell(&mut self, idx: usize) {
-        self.game.towers.remove(idx);
-        if !self.dev_mode {
-            self.game.money = self.game.money.saturating_add(20);
+    fn request_sell_at(&mut self, x: u16, y: u16) {
+        match self.send_player_cmd(NetCmd::Sell { x, y }) {
+            Ok(()) => {
+                self.multiplayer.last_error = None;
+                self.multiplayer.last_info = None;
+            }
+            Err(e) => self.multiplayer.last_error = Some(e),
         }
-        self.multiplayer.last_error = None;
     }
 
     fn try_build(&mut self) {
@@ -1677,7 +2179,7 @@ impl App {
             return;
         };
         if self.is_multiplayer_peer() {
-            self.request_upgrade(idx);
+            self.request_upgrade_at(x, y);
             return;
         }
 
@@ -1704,7 +2206,7 @@ impl App {
             return;
         };
         if self.is_multiplayer_peer() {
-            self.request_sell(idx);
+            self.request_sell_at(x, y);
             return;
         }
         self.game.towers.remove(idx);
@@ -1728,6 +2230,38 @@ impl App {
 
 fn manhattan(x1: u16, y1: u16, x2: u16, y2: u16) -> u16 {
     x1.abs_diff(x2) + y1.abs_diff(y2)
+}
+
+fn copy_to_clipboard(text: &str) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut child = Command::new("clip")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("nao foi possivel executar `clip`: {e}"))?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(text.as_bytes())
+                .map_err(|e| format!("falha ao escrever no clipboard: {e}"))?;
+        }
+
+        let status = child
+            .wait()
+            .map_err(|e| format!("falha ao aguardar `clip`: {e}"))?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(format!("`clip` falhou: {status:?}"));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = text;
+        Err("clipboard nao suportado nesse sistema".to_string())
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -2,6 +2,8 @@ mod app;
 mod assets;
 mod fx;
 mod input;
+mod net_msg;
+mod p2p_connection;
 mod save;
 mod stun;
 mod ui;
