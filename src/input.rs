@@ -3,7 +3,8 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEve
 use std::time::Duration;
 
 use crate::app::{
-    App, ButtonId, HoverAction, MapSelectAction, MultiplayerAction, Screen, TowerKind,
+    App, ButtonId, HoverAction, MapSelectAction, MultiplayerAction, MultiplayerFocus, Screen,
+    TowerKind,
 };
 
 pub fn pump(app: &mut App) -> Result<()> {
@@ -26,45 +27,30 @@ pub fn pump(app: &mut App) -> Result<()> {
                 },
                 Screen::Multiplayer => match k.code {
                     KeyCode::Esc => app.enter_main_menu(),
-                    KeyCode::Char('q') => app.should_quit = true,
-                    KeyCode::Up | KeyCode::Char('w') => app.multiplayer_focus_prev(),
-                    KeyCode::Down | KeyCode::Char('s') => app.multiplayer_focus_next(),
-                    KeyCode::Left | KeyCode::Char('a') => match app.multiplayer.focus {
-                        crate::app::MultiplayerFocus::Role => app.multiplayer_toggle_role(),
-                        crate::app::MultiplayerFocus::IpMode => app.multiplayer_toggle_ip_mode(),
-                        _ => {}
-                    },
-                    KeyCode::Right | KeyCode::Char('d') => match app.multiplayer.focus {
-                        crate::app::MultiplayerFocus::Role => app.multiplayer_toggle_role(),
-                        crate::app::MultiplayerFocus::IpMode => app.multiplayer_toggle_ip_mode(),
-                        _ => {}
-                    },
-                    KeyCode::Enter => match app.multiplayer.focus {
-                        crate::app::MultiplayerFocus::PublicIp => app.multiplayer_copy_public_ip(),
-                        crate::app::MultiplayerFocus::Connect => app.multiplayer_connect(),
-                        crate::app::MultiplayerFocus::Continue => app.multiplayer_continue(),
-                        _ => {}
-                    },
-                    KeyCode::Backspace => app.multiplayer_backspace(),
-                    KeyCode::Char('c')
-                        if !matches!(
+                    KeyCode::Backspace => {
+                        if matches!(
                             app.multiplayer.focus,
-                            crate::app::MultiplayerFocus::PeerIp
-                                | crate::app::MultiplayerFocus::Name
-                        ) =>
-                    {
-                        app.multiplayer_copy_public_ip()
+                            MultiplayerFocus::PeerIp | MultiplayerFocus::Name
+                        ) {
+                            app.multiplayer_backspace();
+                        }
                     }
-                    KeyCode::Char('r')
-                        if !matches!(
+                    KeyCode::Enter => {
+                        if matches!(
                             app.multiplayer.focus,
-                            crate::app::MultiplayerFocus::PeerIp
-                                | crate::app::MultiplayerFocus::Name
-                        ) =>
-                    {
-                        app.multiplayer_refresh_ip()
+                            MultiplayerFocus::PeerIp | MultiplayerFocus::Name
+                        ) {
+                            app.multiplayer.focus = MultiplayerFocus::Continue;
+                        }
                     }
-                    KeyCode::Char(c) => app.multiplayer_input_char(c),
+                    KeyCode::Char(c) => {
+                        if matches!(
+                            app.multiplayer.focus,
+                            MultiplayerFocus::PeerIp | MultiplayerFocus::Name
+                        ) {
+                            app.multiplayer_input_char(c);
+                        }
+                    }
                     _ => {}
                 },
                 Screen::MapSelect => match k.code {
@@ -135,11 +121,43 @@ pub fn pump(app: &mut App) -> Result<()> {
                 } else {
                     None
                 };
+                app.ui.hover_main_menu = hit_test_main_menu(app, m.column, m.row);
+                app.ui.hover_load_slot = hit_test_load_slot(app, m.column, m.row);
+                app.ui.hover_load_wave = hit_test_load_wave(app, m.column, m.row);
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 app.ui.drag_origin = None;
                 app.ui.drag_view = None;
-                if app.screen == Screen::MapSelect {
+                if app.screen == Screen::MainMenu {
+                    if let Some(index) = hit_test_main_menu(app, m.column, m.row) {
+                        app.main_menu_index = index;
+                        app.main_menu_activate();
+                    }
+                } else if app.screen == Screen::LoadGame {
+                    if let Some(index) = hit_test_load_slot(app, m.column, m.row) {
+                        let should_load = app.load_menu.focus == crate::app::LoadMenuFocus::Slots
+                            && app.load_menu.selected_slot == index;
+                        app.load_menu.focus = crate::app::LoadMenuFocus::Slots;
+                        app.load_menu.selected_slot = index;
+                        app.load_menu.selected_wave = app
+                            .load_menu
+                            .slots
+                            .get(index)
+                            .map(|s| s.waves.len().saturating_sub(1))
+                            .unwrap_or(0);
+                        if should_load {
+                            app.load_menu_activate();
+                        }
+                    } else if let Some(index) = hit_test_load_wave(app, m.column, m.row) {
+                        let should_load = app.load_menu.focus == crate::app::LoadMenuFocus::Waves
+                            && app.load_menu.selected_wave == index;
+                        app.load_menu.focus = crate::app::LoadMenuFocus::Waves;
+                        app.load_menu.selected_wave = index;
+                        if should_load {
+                            app.load_menu_activate();
+                        }
+                    }
+                } else if app.screen == Screen::MapSelect {
                     if let Some(action) = hit_test_map_select(app, m.column, m.row) {
                         match action {
                             MapSelectAction::Prev => app.select_prev_map(),
@@ -204,6 +222,9 @@ pub fn pump(app: &mut App) -> Result<()> {
                                 app.multiplayer_kick_player(index)
                             }
                         }
+                    }
+                    else {
+                        app.multiplayer.focus = MultiplayerFocus::Continue;
                     }
                 }
             }
@@ -404,6 +425,42 @@ fn hit_test_multiplayer(app: &App, x: u16, y: u16) -> Option<MultiplayerAction> 
         if contains(*rect, x, y) {
             let target = hit.kick_targets.get(idx).copied().unwrap_or(1);
             return Some(MultiplayerAction::KickPlayer(target));
+        }
+    }
+    None
+}
+
+fn hit_test_main_menu(app: &App, x: u16, y: u16) -> Option<usize> {
+    if app.screen != Screen::MainMenu {
+        return None;
+    }
+    for (idx, rect) in app.ui.main_menu_hit.options.iter().enumerate() {
+        if contains(*rect, x, y) {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+fn hit_test_load_slot(app: &App, x: u16, y: u16) -> Option<usize> {
+    if app.screen != Screen::LoadGame {
+        return None;
+    }
+    for (idx, rect) in app.ui.load_menu_hit.slot_items.iter().enumerate() {
+        if contains(*rect, x, y) {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+fn hit_test_load_wave(app: &App, x: u16, y: u16) -> Option<usize> {
+    if app.screen != Screen::LoadGame {
+        return None;
+    }
+    for (idx, rect) in app.ui.load_menu_hit.wave_items.iter().enumerate() {
+        if contains(*rect, x, y) {
+            return Some(idx);
         }
     }
     None

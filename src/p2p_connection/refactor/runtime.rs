@@ -1347,7 +1347,7 @@ async fn read_frame(stream: &mut quinn::RecvStream) -> io::Result<Option<Vec<u8>
 mod tests {
     use crate::p2p_connection::p2p_connect::stun::stun_server_list;
     use super::*;
-    use crate::net::serialize_message;
+    use super::super::messages::serialize_message;
 
     #[test]
     fn stun_defaults_not_empty() {

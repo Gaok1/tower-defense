@@ -101,18 +101,52 @@ fn tile_bg(zoom: u16, is_path: bool, is_goal: bool) -> Color {
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
-    app.set_layout_mode_from_size(area);
+    let show_notice = app
+        .ui
+        .top_notice
+        .as_ref()
+        .is_some_and(|n| n.ttl_ticks > 0 && !n.text.trim().is_empty());
+
+    let (notice_area, content_area) = if show_notice && area.height >= 2 {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .split(area);
+        (chunks[0], chunks[1])
+    } else {
+        (Rect::new(0, 0, 0, 0), area)
+    };
+
+    app.set_layout_mode_from_size(content_area);
 
     f.render_widget(Block::default().style(Style::default().bg(bg())), area);
 
+    if notice_area.height == 1 {
+        let text = app
+            .ui
+            .top_notice
+            .as_ref()
+            .map(|n| n.text.as_str())
+            .unwrap_or("");
+        let banner = Paragraph::new(text)
+            .alignment(Alignment::Center)
+            .style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(danger())
+                    .add_modifier(Modifier::BOLD),
+            );
+        f.render_widget(banner, notice_area);
+    }
+
     match app.screen {
-        Screen::MainMenu => draw_main_menu(f, app, area),
-        Screen::Multiplayer => draw_multiplayer_menu(f, app, area),
-        Screen::MapSelect => draw_map_select(f, app, area),
-        Screen::LoadGame => draw_load_game(f, app, area),
+        Screen::MainMenu => draw_main_menu(f, app, content_area),
+        Screen::Multiplayer => draw_multiplayer_menu(f, app, content_area),
+        Screen::MapSelect => draw_map_select(f, app, content_area),
+        Screen::LoadGame => draw_load_game(f, app, content_area),
         Screen::Game => match app.ui.mode {
-            LayoutMode::Wide => draw_wide(f, app, area),
-            LayoutMode::Compact => draw_compact(f, app, area),
+            LayoutMode::Wide => draw_wide(f, app, content_area),
+            LayoutMode::Compact => draw_compact(f, app, content_area),
         },
     }
 }
@@ -1140,6 +1174,8 @@ fn draw_player_cursors(buf: &mut Buffer, area: Rect, vp: MapViewport, app: &App)
 }
 
 fn draw_main_menu(f: &mut Frame, app: &mut App, area: Rect) {
+    app.ui.main_menu_hit = crate::app::MainMenuHitboxes::default();
+
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1175,15 +1211,21 @@ fn draw_main_menu(f: &mut Frame, app: &mut App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
     for (i, label) in options.iter().enumerate() {
         let selected = app.main_menu_index == i;
+        let hovered = app.ui.hover_main_menu == Some(i);
         let style = if selected {
             Style::default()
                 .fg(Color::Black)
                 .bg(accent())
                 .add_modifier(Modifier::BOLD)
+        } else if hovered {
+            Style::default().fg(Color::Black).bg(Color::DarkGray)
         } else {
             Style::default().fg(Color::White).bg(bg())
         };
         lines.push(Line::from(Span::styled(format!("  {label}  "), style)));
+        if i < app.ui.main_menu_hit.options.len() {
+            app.ui.main_menu_hit.options[i] = Rect::new(inner.x, inner.y + i as u16, inner.width, 1);
+        }
     }
 
     f.render_widget(
@@ -1222,7 +1264,7 @@ fn draw_multiplayer_menu(f: &mut Frame, app: &mut App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from(Span::styled(
-            "Escolha criar ou entrar em uma partida e organize o lobby",
+            "Escolha se voce e host ou player e conecte via hole punch",
             Style::default().fg(text_dim()),
         )),
     ])
@@ -1260,233 +1302,560 @@ fn draw_multiplayer_menu(f: &mut Frame, app: &mut App, area: Rect) {
         ConnectionStatus::Failed => "falha",
     };
 
-    let left_rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // botoes de role
-            Constraint::Length(3), // modo IP
-            Constraint::Length(4), // ip publico
-            Constraint::Length(3), // peer ip
-            Constraint::Length(3), // conectar
-            Constraint::Length(5), // nome + continuar
-            Constraint::Min(3),    // status/info
-        ])
-        .split(left_inner);
-
-    let role_cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(left_rows[0]);
-
     let host_selected = app.multiplayer.role == MultiplayerRole::Host;
     let peer_selected = app.multiplayer.role == MultiplayerRole::Peer;
     let hover = app.ui.hover_multiplayer;
 
-    render_action_button(
-        f,
-        role_cols[0],
-        "Criar partida",
-        host_selected,
-        hover == Some(MultiplayerAction::CreateLobby),
-        true,
-    );
-    render_action_button(
-        f,
-        role_cols[1],
-        "Entrar em partida",
-        peer_selected,
-        hover == Some(MultiplayerAction::JoinLobby),
-        true,
-    );
-    app.ui.multiplayer_hit.create_btn = role_cols[0];
-    app.ui.multiplayer_hit.join_btn = role_cols[1];
-
-    let ip_mode_cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(12), Constraint::Min(10)])
-        .split(left_rows[1]);
-    let ip_mode_label = Paragraph::new(Span::styled("Modo IP:", Style::default().fg(text_dim())))
-        .alignment(Alignment::Left)
-        .style(Style::default().bg(bg()));
-    f.render_widget(ip_mode_label, ip_mode_cols[0]);
-
-    let ip_mode_text = match app.multiplayer.ip_mode {
-        IpMode::Ipv4 => "IPv4 (clique)",
-        IpMode::Ipv6 => "IPv6 (clique)",
+    let connect_label = if host_selected {
+        "Conectar player"
+    } else {
+        "Juntar-se ao host"
     };
-    render_action_button(
-        f,
-        ip_mode_cols[1],
-        ip_mode_text,
-        focused == MultiplayerFocus::IpMode,
-        hover == Some(MultiplayerAction::ToggleIpMode),
-        true,
-    );
-    app.ui.multiplayer_hit.ip_mode_btn = ip_mode_cols[1];
 
-    let ip_rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(1),
-        ])
-        .split(left_rows[2]);
-    let ip_label = Paragraph::new(Span::styled(
-        "IP publico (STUN)",
-        Style::default().fg(text_dim()),
-    ))
-    .style(Style::default().bg(bg()));
-    f.render_widget(ip_label, ip_rows[0]);
-    let ip_value = Paragraph::new(Span::styled(
-        local_ip,
-        Style::default().fg(if local_endpoint.is_some() {
-            Color::White
+    let peer_label_text = if host_selected {
+        "IP do player (hole punch)"
+    } else {
+        "IP do host (hole punch)"
+    };
+    let peer_placeholder = if host_selected {
+        "<IP:porta do player>"
+    } else {
+        "<IP:porta do host>"
+    };
+
+    // Layout responsivo: quando houver espaço, usa caixas/botoes com bordas e gaps.
+    let use_spacious = left_inner.height >= 18 && left_inner.width >= 54;
+
+    if use_spacious {
+        let left_rows = Layout::default()
+            .direction(Direction::Vertical)
+            .margin(1)
+            .constraints([
+                Constraint::Length(3), // role
+                Constraint::Length(1), // gap
+                Constraint::Length(3), // ip mode + stun value
+                Constraint::Length(3), // stun buttons
+                Constraint::Length(3), // peer + connect
+                Constraint::Length(3), // name + continue
+                Constraint::Min(0),    // status
+            ])
+            .split(left_inner);
+
+        // ---------------------- role ----------------------
+        let role_cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(50),
+                Constraint::Length(1),
+                Constraint::Percentage(50),
+            ])
+            .split(left_rows[0]);
+        render_action_button(
+            f,
+            role_cols[0],
+            "Sou host",
+            host_selected,
+            hover == Some(MultiplayerAction::CreateLobby),
+            true,
+        );
+        render_action_button(
+            f,
+            role_cols[2],
+            "Sou player",
+            peer_selected,
+            hover == Some(MultiplayerAction::JoinLobby),
+            true,
+        );
+        app.ui.multiplayer_hit.create_btn = role_cols[0];
+        app.ui.multiplayer_hit.join_btn = role_cols[2];
+
+        // ---------------------- ip + stun ----------------------
+        let ip_cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(40),
+                Constraint::Length(1),
+                Constraint::Percentage(60),
+            ])
+            .split(left_rows[2]);
+
+        let ip_mode_value = match app.multiplayer.ip_mode {
+            IpMode::Ipv4 => "IPv4",
+            IpMode::Ipv6 => "IPv6",
+        };
+        let ip_mode_text = format!("Modo IP: {ip_mode_value}");
+        render_action_button(
+            f,
+            ip_cols[0],
+            ip_mode_text.as_str(),
+            focused == MultiplayerFocus::IpMode,
+            hover == Some(MultiplayerAction::ToggleIpMode),
+            true,
+        );
+        app.ui.multiplayer_hit.ip_mode_btn = ip_cols[0];
+
+        let stun_title_style = Style::default()
+            .fg(panel_title())
+            .add_modifier(Modifier::BOLD);
+        let stun_block = Block::default()
+            .title(Span::styled(" IP publico (STUN) ", stun_title_style))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(panel_border()));
+        let stun_text_style = Style::default()
+            .fg(if local_endpoint.is_some() {
+                Color::White
+            } else {
+                text_dim()
+            })
+            .bg(bg());
+        f.render_widget(
+            Paragraph::new(local_ip.clone())
+                .alignment(Alignment::Left)
+                .style(stun_text_style)
+                .block(stun_block),
+            ip_cols[2],
+        );
+
+        // ---------------------- stun buttons ----------------------
+        let ip_btn_cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(50),
+                Constraint::Length(1),
+                Constraint::Percentage(50),
+            ])
+            .split(left_rows[3]);
+        render_action_button(
+            f,
+            ip_btn_cols[0],
+            "Copiar IP",
+            focused == MultiplayerFocus::PublicIp,
+            hover == Some(MultiplayerAction::CopyStunIp),
+            local_endpoint.is_some(),
+        );
+        render_action_button(
+            f,
+            ip_btn_cols[2],
+            "Atualizar STUN",
+            false,
+            hover == Some(MultiplayerAction::RefreshStun),
+            true,
+        );
+        app.ui.multiplayer_hit.copy_ip_btn = ip_btn_cols[0];
+        app.ui.multiplayer_hit.refresh_ip_btn = ip_btn_cols[2];
+
+        // ---------------------- peer + connect ----------------------
+        let peer_cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(68),
+                Constraint::Length(1),
+                Constraint::Percentage(32),
+            ])
+            .split(left_rows[4]);
+
+        let peer_focus =
+            focused == MultiplayerFocus::PeerIp || hover == Some(MultiplayerAction::FocusPeerIp);
+        let peer_value = if app.multiplayer.peer_ip.is_empty() {
+            peer_placeholder
         } else {
-            text_dim()
-        }),
-    ))
-    .style(Style::default().bg(bg()));
-    f.render_widget(ip_value, ip_rows[1]);
+            app.multiplayer.peer_ip.as_str()
+        };
+        let peer_text_style = if peer_focus {
+            Style::default()
+                .fg(Color::Black)
+                .bg(accent())
+                .add_modifier(Modifier::BOLD)
+        } else if app.multiplayer.peer_ip.is_empty() {
+            Style::default().fg(text_dim()).bg(bg())
+        } else {
+            Style::default().fg(Color::White).bg(bg())
+        };
+        let peer_block = Block::default()
+            .title(Span::styled(
+                format!(" {peer_label_text} "),
+                Style::default().fg(text_dim()),
+            ))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(if peer_focus {
+                accent()
+            } else {
+                panel_border()
+            }));
+        f.render_widget(
+            Paragraph::new(peer_value)
+                .alignment(Alignment::Left)
+                .style(peer_text_style)
+                .block(peer_block),
+            peer_cols[0],
+        );
+        app.ui.multiplayer_hit.peer_ip_field = peer_cols[0];
 
-    let ip_btn_cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(ip_rows[2]);
-    render_action_button(
-        f,
-        ip_btn_cols[0],
-        "Copiar IP",
-        focused == MultiplayerFocus::PublicIp,
-        hover == Some(MultiplayerAction::CopyStunIp),
-        local_endpoint.is_some(),
-    );
-    render_action_button(
-        f,
-        ip_btn_cols[1],
-        "Atualizar STUN",
-        false,
-        hover == Some(MultiplayerAction::RefreshStun),
-        true,
-    );
-    app.ui.multiplayer_hit.copy_ip_btn = ip_btn_cols[0];
-    app.ui.multiplayer_hit.refresh_ip_btn = ip_btn_cols[1];
+        let connect_text = format!("{connect_label}\n{status_text}");
+        render_action_button(
+            f,
+            peer_cols[2],
+            connect_text.as_str(),
+            focused == MultiplayerFocus::Connect,
+            hover == Some(MultiplayerAction::Connect),
+            true,
+        );
+        app.ui.multiplayer_hit.connect_btn = peer_cols[2];
 
-    let peer_ip_rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(0),
-        ])
-        .split(left_rows[3]);
-    let peer_label = Paragraph::new(Span::styled("IP do host", Style::default().fg(text_dim())))
-        .style(Style::default().bg(bg()));
-    f.render_widget(peer_label, peer_ip_rows[0]);
-    let peer_value = if app.multiplayer.peer_ip.is_empty() {
-        "<digite o IP do host>"
+        // ---------------------- name + continue ----------------------
+        let name_cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(62),
+                Constraint::Length(1),
+                Constraint::Percentage(38),
+            ])
+            .split(left_rows[5]);
+
+        let name_focus =
+            focused == MultiplayerFocus::Name || hover == Some(MultiplayerAction::FocusName);
+        let name_value = if app.multiplayer.name_input.is_empty() {
+            "<digite seu nome>"
+        } else {
+            app.multiplayer.name_input.as_str()
+        };
+        let name_text_style = if name_focus {
+            Style::default()
+                .fg(Color::Black)
+                .bg(accent())
+                .add_modifier(Modifier::BOLD)
+        } else if app.multiplayer.name_input.is_empty() {
+            Style::default().fg(text_dim()).bg(bg())
+        } else {
+            Style::default().fg(Color::White).bg(bg())
+        };
+        let name_block = Block::default()
+            .title(Span::styled(
+                " Seu nome ",
+                Style::default().fg(text_dim()),
+            ))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(if name_focus {
+                accent()
+            } else {
+                panel_border()
+            }));
+        f.render_widget(
+            Paragraph::new(name_value)
+                .alignment(Alignment::Left)
+                .style(name_text_style)
+                .block(name_block),
+            name_cols[0],
+        );
+        app.ui.multiplayer_hit.name_field = name_cols[0];
+
+        let name_enabled = app.multiplayer.status == ConnectionStatus::Connected;
+        let continue_label = if host_selected {
+            "Ir para mapas"
+        } else {
+            "Confirmar nome"
+        };
+        render_action_button(
+            f,
+            name_cols[2],
+            continue_label,
+            focused == MultiplayerFocus::Continue,
+            hover == Some(MultiplayerAction::Continue),
+            name_enabled,
+        );
+        app.ui.multiplayer_hit.continue_btn = name_cols[2];
+
+        // ---------------------- status ----------------------
+        let mut info_lines: Vec<Line> = Vec::new();
+        info_lines.push(Line::from(vec![
+            Span::styled("Status: ", Style::default().fg(text_dim())),
+            Span::styled(status_text, Style::default().fg(Color::White)),
+        ]));
+        if let Some(msg) = app.multiplayer.last_info.as_ref() {
+            info_lines.push(Line::from(Span::styled(
+                format!("Info: {msg}"),
+                Style::default().fg(good()),
+            )));
+        }
+        if let Some(err) = app.multiplayer.last_error.as_ref() {
+            info_lines.push(Line::from(Span::styled(
+                format!("Erro: {err}"),
+                Style::default().fg(danger()),
+            )));
+        }
+        let status_block = Block::default()
+            .title(Span::styled(
+                " Status ",
+                Style::default()
+                    .fg(panel_title())
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(panel_border()));
+        f.render_widget(
+            Paragraph::new(info_lines)
+                .alignment(Alignment::Left)
+                .style(Style::default().bg(bg()))
+                .wrap(Wrap { trim: true })
+                .block(status_block),
+            left_rows[6],
+        );
     } else {
-        app.multiplayer.peer_ip.as_str()
-    };
-    let peer_focus =
-        focused == MultiplayerFocus::PeerIp || hover == Some(MultiplayerAction::FocusPeerIp);
-    let peer_style = if peer_focus {
-        Style::default()
-            .fg(Color::Black)
-            .bg(accent())
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White).bg(bg())
-    };
-    let peer_field = Paragraph::new(Span::styled(peer_value, peer_style))
-        .style(peer_style)
-        .alignment(Alignment::Left);
-    f.render_widget(peer_field, peer_ip_rows[1]);
-    app.ui.multiplayer_hit.peer_ip_field = peer_ip_rows[1];
+        // Layout compacto (prioriza caber em telas pequenas)
+        let left_sections = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(2), // botoes de role
+                Constraint::Length(3), // modo IP + stun info
+                Constraint::Min(4),    // peer/nome
+                Constraint::Min(1),    // status/info
+            ])
+            .split(left_inner);
 
-    let connect_label = if app.multiplayer.role == MultiplayerRole::Host {
-        "Criar lobby"
-    } else {
-        "Entrar no lobby"
-    };
-    let connect_text = format!("{connect_label} • {status_text}");
-    render_action_button(
-        f,
-        left_rows[4],
-        connect_text.as_str(),
-        focused == MultiplayerFocus::Connect,
-        hover == Some(MultiplayerAction::Connect),
-        true,
-    );
-    app.ui.multiplayer_hit.connect_btn = left_rows[4];
+        let role_cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(50),
+                Constraint::Length(1),
+                Constraint::Percentage(50),
+            ])
+            .split(left_sections[0]);
 
-    let name_rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .split(left_rows[5]);
-    let name_label = Paragraph::new(Span::styled(
-        "Nome no lobby",
-        Style::default().fg(text_dim()),
-    ))
-    .style(Style::default().bg(bg()));
-    f.render_widget(name_label, name_rows[0]);
-    let name_value = if app.multiplayer.name_input.is_empty() {
-        "<digite seu nome>"
-    } else {
-        app.multiplayer.name_input.as_str()
-    };
-    let name_focus =
-        focused == MultiplayerFocus::Name || hover == Some(MultiplayerAction::FocusName);
-    let name_style = if name_focus {
-        Style::default()
-            .fg(Color::Black)
-            .bg(accent())
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White).bg(bg())
-    };
-    let name_field = Paragraph::new(Span::styled(name_value, name_style))
-        .style(name_style)
-        .alignment(Alignment::Left);
-    f.render_widget(name_field, name_rows[1]);
-    app.ui.multiplayer_hit.name_field = name_rows[1];
+        render_action_button(
+            f,
+            role_cols[0],
+            "Host",
+            host_selected,
+            hover == Some(MultiplayerAction::CreateLobby),
+            true,
+        );
+        render_action_button(
+            f,
+            role_cols[2],
+            "Player",
+            peer_selected,
+            hover == Some(MultiplayerAction::JoinLobby),
+            true,
+        );
+        app.ui.multiplayer_hit.create_btn = role_cols[0];
+        app.ui.multiplayer_hit.join_btn = role_cols[2];
 
-    let name_enabled = app.multiplayer.status == ConnectionStatus::Connected;
-    render_action_button(
-        f,
-        name_rows[2],
-        "Continuar para mapas",
-        focused == MultiplayerFocus::Continue,
-        hover == Some(MultiplayerAction::Continue),
-        name_enabled,
-    );
-    app.ui.multiplayer_hit.continue_btn = name_rows[2];
+        let ip_rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // modo IP
+                Constraint::Length(1), // stun info
+                Constraint::Length(1), // stun botoes
+            ])
+            .split(left_sections[1]);
 
-    let mut info_lines: Vec<Line> = Vec::new();
-    if let Some(msg) = app.multiplayer.last_info.as_ref() {
-        info_lines.push(Line::from(Span::styled(
-            format!(" Info: {msg}"),
-            Style::default().fg(good()),
-        )));
-    }
-    if let Some(err) = app.multiplayer.last_error.as_ref() {
-        info_lines.push(Line::from(Span::styled(
-            format!(" Erro: {err}"),
-            Style::default().fg(danger()),
-        )));
-    }
-    f.render_widget(
-        Paragraph::new(info_lines)
+        let ip_mode_value = match app.multiplayer.ip_mode {
+            IpMode::Ipv4 => "IPv4",
+            IpMode::Ipv6 => "IPv6",
+        };
+        let ip_mode_cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(12), Constraint::Min(10)])
+            .split(ip_rows[0]);
+        let ip_mode_label = Paragraph::new(Span::styled("Modo IP:", Style::default().fg(text_dim())))
             .alignment(Alignment::Left)
-            .style(Style::default().bg(bg()))
-            .wrap(Wrap { trim: true }),
-        left_rows[6],
-    );
+            .style(Style::default().bg(bg()));
+        f.render_widget(ip_mode_label, ip_mode_cols[0]);
+        let ip_mode_text = format!("{ip_mode_value} (clique)");
+        render_action_button(
+            f,
+            ip_mode_cols[1],
+            ip_mode_text.as_str(),
+            focused == MultiplayerFocus::IpMode,
+            hover == Some(MultiplayerAction::ToggleIpMode),
+            true,
+        );
+        app.ui.multiplayer_hit.ip_mode_btn = ip_mode_cols[1];
+
+        let stun_info = Paragraph::new(Line::from(vec![
+            Span::styled("IP publico (STUN): ", Style::default().fg(text_dim())),
+            Span::styled(
+                local_ip.clone(),
+                Style::default().fg(if local_endpoint.is_some() {
+                    Color::White
+                } else {
+                    text_dim()
+                }),
+            ),
+        ]))
+        .style(Style::default().bg(bg()));
+        f.render_widget(stun_info, ip_rows[1]);
+
+        let ip_btn_cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(50),
+                Constraint::Length(1),
+                Constraint::Percentage(50),
+            ])
+            .split(ip_rows[2]);
+        render_action_button(
+            f,
+            ip_btn_cols[0],
+            "Copiar IP",
+            focused == MultiplayerFocus::PublicIp,
+            hover == Some(MultiplayerAction::CopyStunIp),
+            local_endpoint.is_some(),
+        );
+        render_action_button(
+            f,
+            ip_btn_cols[2],
+            "Atualizar STUN",
+            false,
+            hover == Some(MultiplayerAction::RefreshStun),
+            true,
+        );
+        app.ui.multiplayer_hit.copy_ip_btn = ip_btn_cols[0];
+        app.ui.multiplayer_hit.refresh_ip_btn = ip_btn_cols[2];
+
+        let form_rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(2), // peer + conectar
+                Constraint::Length(2), // nome + continuar
+                Constraint::Min(0),
+            ])
+            .split(left_sections[2]);
+
+        let peer_cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(70),
+                Constraint::Length(1),
+                Constraint::Percentage(30),
+            ])
+            .split(form_rows[0]);
+        let peer_label_field = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(1)])
+            .split(peer_cols[0]);
+        let peer_label =
+            Paragraph::new(Span::styled(peer_label_text, Style::default().fg(text_dim())))
+                .style(Style::default().bg(bg()));
+        f.render_widget(peer_label, peer_label_field[0]);
+        let peer_value = if app.multiplayer.peer_ip.is_empty() {
+            peer_placeholder
+        } else {
+            app.multiplayer.peer_ip.as_str()
+        };
+        let peer_focus =
+            focused == MultiplayerFocus::PeerIp || hover == Some(MultiplayerAction::FocusPeerIp);
+        let peer_style = if peer_focus {
+            Style::default()
+                .fg(Color::Black)
+                .bg(accent())
+                .add_modifier(Modifier::BOLD)
+        } else if app.multiplayer.peer_ip.is_empty() {
+            Style::default().fg(text_dim()).bg(bg())
+        } else {
+            Style::default().fg(Color::White).bg(bg())
+        };
+        f.render_widget(
+            Paragraph::new(peer_value)
+                .style(peer_style)
+                .alignment(Alignment::Left),
+            peer_label_field[1],
+        );
+        app.ui.multiplayer_hit.peer_ip_field = peer_label_field[1];
+
+        let connect_text = format!("{connect_label} | {status_text}");
+        render_action_button(
+            f,
+            peer_cols[2],
+            connect_text.as_str(),
+            focused == MultiplayerFocus::Connect,
+            hover == Some(MultiplayerAction::Connect),
+            true,
+        );
+        app.ui.multiplayer_hit.connect_btn = peer_cols[2];
+
+        let name_cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(65),
+                Constraint::Length(1),
+                Constraint::Percentage(35),
+            ])
+            .split(form_rows[1]);
+        let name_label_field = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(1)])
+            .split(name_cols[0]);
+        let name_label =
+            Paragraph::new(Span::styled("Nome", Style::default().fg(text_dim())))
+                .style(Style::default().bg(bg()));
+        f.render_widget(name_label, name_label_field[0]);
+        let name_value = if app.multiplayer.name_input.is_empty() {
+            "<digite seu nome>"
+        } else {
+            app.multiplayer.name_input.as_str()
+        };
+        let name_focus =
+            focused == MultiplayerFocus::Name || hover == Some(MultiplayerAction::FocusName);
+        let name_style = if name_focus {
+            Style::default()
+                .fg(Color::Black)
+                .bg(accent())
+                .add_modifier(Modifier::BOLD)
+        } else if app.multiplayer.name_input.is_empty() {
+            Style::default().fg(text_dim()).bg(bg())
+        } else {
+            Style::default().fg(Color::White).bg(bg())
+        };
+        f.render_widget(
+            Paragraph::new(name_value)
+                .style(name_style)
+                .alignment(Alignment::Left),
+            name_label_field[1],
+        );
+        app.ui.multiplayer_hit.name_field = name_label_field[1];
+
+        let name_enabled = app.multiplayer.status == ConnectionStatus::Connected;
+        let continue_label = if host_selected { "Mapas" } else { "Confirmar" };
+        render_action_button(
+            f,
+            name_cols[2],
+            continue_label,
+            focused == MultiplayerFocus::Continue,
+            hover == Some(MultiplayerAction::Continue),
+            name_enabled,
+        );
+        app.ui.multiplayer_hit.continue_btn = name_cols[2];
+
+        let mut info_lines: Vec<Line> = Vec::new();
+        info_lines.push(Line::from(vec![
+            Span::styled("Status: ", Style::default().fg(text_dim())),
+            Span::styled(status_text, Style::default().fg(Color::White)),
+        ]));
+        if let Some(msg) = app.multiplayer.last_info.as_ref() {
+            info_lines.push(Line::from(Span::styled(
+                format!("Info: {msg}"),
+                Style::default().fg(good()),
+            )));
+        }
+        if let Some(err) = app.multiplayer.last_error.as_ref() {
+            info_lines.push(Line::from(Span::styled(
+                format!("Erro: {err}"),
+                Style::default().fg(danger()),
+            )));
+        }
+        f.render_widget(
+            Paragraph::new(info_lines)
+                .alignment(Alignment::Left)
+                .style(Style::default().bg(bg()))
+                .wrap(Wrap { trim: true }),
+            left_sections[3],
+        );
+    }
 
     let mut players: Vec<(usize, String, bool)> = Vec::new();
     let local_name = if let Some(name) = app.multiplayer.player_name.as_ref() {
@@ -1554,7 +1923,7 @@ fn draw_multiplayer_menu(f: &mut Frame, app: &mut App, area: Rect) {
     }
 
     let footer = Paragraph::new(Line::from(Span::styled(
-        "Mouse: clique para criar/entrar, copiar IP, conectar e remover jogadores • Esc voltar",
+        "Mouse: clique nos botoes; clique no campo para digitar; clique fora para sair do campo; Esc voltar",
         Style::default().fg(text_dim()),
     )))
     .alignment(Alignment::Center)
@@ -1594,16 +1963,35 @@ fn render_action_button(
     enabled: bool,
 ) {
     let style = button_style(selected, hovered, enabled);
-    let text = Line::from(Span::styled(format!(" {label} "), style));
-    f.render_widget(
-        Paragraph::new(text)
-            .alignment(Alignment::Center)
-            .style(style),
-        rect,
-    );
+    let mut widget = Paragraph::new(label.to_string())
+        .alignment(Alignment::Center)
+        .style(style)
+        .wrap(Wrap { trim: true });
+
+    if rect.height >= 3 && rect.width >= 8 {
+        let mut border_style = Style::default().fg(if selected || hovered {
+            accent()
+        } else {
+            panel_border()
+        });
+        if !enabled {
+            border_style = border_style.fg(panel_border()).add_modifier(Modifier::DIM);
+        }
+
+        widget = widget.block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(border_style),
+        );
+    }
+
+    f.render_widget(widget, rect);
 }
 
 fn draw_load_game(f: &mut Frame, app: &mut App, area: Rect) {
+    app.ui.load_menu_hit = crate::app::LoadMenuHitboxes::default();
+
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1661,11 +2049,14 @@ fn draw_load_game(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         for (i, slot) in app.load_menu.slots.iter().enumerate() {
             let selected = i == app.load_menu.selected_slot;
+            let hovered = app.ui.hover_load_slot == Some(i);
             let style = if selected && focus_slots {
                 Style::default()
                     .fg(Color::Black)
                     .bg(accent())
                     .add_modifier(Modifier::BOLD)
+            } else if hovered {
+                Style::default().fg(Color::Black).bg(accent())
             } else if selected {
                 Style::default().fg(Color::Black).bg(Color::DarkGray)
             } else {
@@ -1680,12 +2071,18 @@ fn draw_load_game(f: &mut Frame, app: &mut App, area: Rect) {
                 format!(" {short_id}  {}  wave {last_wave}{dev_tag}", slot.map_name),
                 style,
             )));
+
+            if (i as u16) < inner.height {
+                app.ui
+                    .load_menu_hit
+                    .slot_items
+                    .push(Rect::new(inner.x, inner.y + i as u16, inner.width, 1));
+            }
         }
     }
 
     f.render_widget(
         Paragraph::new(slot_lines)
-            .wrap(Wrap { trim: true })
             .style(Style::default().bg(bg())),
         inner,
     );
@@ -1708,11 +2105,14 @@ fn draw_load_game(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         for (i, w) in waves.iter().enumerate() {
             let selected = i == app.load_menu.selected_wave;
+            let hovered = app.ui.hover_load_wave == Some(i);
             let style = if selected && focus_waves {
                 Style::default()
                     .fg(Color::Black)
                     .bg(accent())
                     .add_modifier(Modifier::BOLD)
+            } else if hovered {
+                Style::default().fg(Color::Black).bg(accent())
             } else if selected {
                 Style::default().fg(Color::Black).bg(Color::DarkGray)
             } else {
@@ -1720,12 +2120,18 @@ fn draw_load_game(f: &mut Frame, app: &mut App, area: Rect) {
             };
 
             wave_lines.push(Line::from(Span::styled(format!(" Wave {w} "), style)));
+
+            if (i as u16) < inner.height {
+                app.ui
+                    .load_menu_hit
+                    .wave_items
+                    .push(Rect::new(inner.x, inner.y + i as u16, inner.width, 1));
+            }
         }
     }
 
     f.render_widget(
         Paragraph::new(wave_lines)
-            .wrap(Wrap { trim: true })
             .style(Style::default().bg(bg())),
         inner,
     );

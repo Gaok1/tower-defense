@@ -1,6 +1,6 @@
 use crate::{
     fx::{FxManager, Vec2i},
-    net_msg::{GameSnapshot, NetCmd, NetMsg},
+    net_msg::{FxEvent, GameSnapshot, NetCmd, NetMsg},
     p2p_connection::{AutotuneConfig, NetCommand, NetEvent, start_network},
     save,
 };
@@ -87,6 +87,7 @@ pub struct MultiplayerState {
     pub last_error: Option<String>,
     pub last_info: Option<String>,
     pub cursors: Vec<PlayerCursor>,
+    pub pending_fx: Vec<FxEvent>,
     pub network: Option<MultiplayerNetwork>,
     pub next_cmd_id: u32,
 }
@@ -107,6 +108,7 @@ impl MultiplayerState {
             last_error: None,
             last_info: None,
             cursors: Vec::new(),
+            pending_fx: Vec::new(),
             network: None,
             next_cmd_id: 1,
         }
@@ -246,6 +248,36 @@ pub struct UiHitboxes {
     pub map_select_start: Rect,
 }
 
+pub const MAIN_MENU_OPTION_COUNT: usize = 3;
+
+#[derive(Debug, Clone, Copy)]
+pub struct MainMenuHitboxes {
+    pub options: [Rect; MAIN_MENU_OPTION_COUNT],
+}
+
+impl Default for MainMenuHitboxes {
+    fn default() -> Self {
+        Self {
+            options: [Rect::new(0, 0, 0, 0); MAIN_MENU_OPTION_COUNT],
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadMenuHitboxes {
+    pub slot_items: Vec<Rect>,
+    pub wave_items: Vec<Rect>,
+}
+
+impl Default for LoadMenuHitboxes {
+    fn default() -> Self {
+        Self {
+            slot_items: Vec::new(),
+            wave_items: Vec::new(),
+        }
+    }
+}
+
 impl Default for UiHitboxes {
     fn default() -> Self {
         Self {
@@ -325,14 +357,26 @@ pub struct UiState {
     pub hover_build_kind: Option<TowerKind>,
     pub hover_map_select: Option<MapSelectAction>,
     pub hover_multiplayer: Option<MultiplayerAction>,
+    pub hover_main_menu: Option<usize>,
+    pub hover_load_slot: Option<usize>,
+    pub hover_load_wave: Option<usize>,
+    pub top_notice: Option<TopNotice>,
     pub hit: UiHitboxes,
     pub multiplayer_hit: MultiplayerHitboxes,
+    pub main_menu_hit: MainMenuHitboxes,
+    pub load_menu_hit: LoadMenuHitboxes,
     pub viewport: MapViewport,
     pub zoom: u16,
-    pub last_zoom: u16, // <-- NOVO (pra ancorar zoom sem “pular”)
+    pub last_zoom: u16, // <-- NOVO (pra ancorar zoom sem "pular")
     pub manual_pan: bool,
     pub drag_origin: Option<(u16, u16)>,
     pub drag_view: Option<(u16, u16)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TopNotice {
+    pub text: String,
+    pub ttl_ticks: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -451,6 +495,22 @@ pub struct MapSpec {
 }
 
 impl App {
+    fn show_top_notice(&mut self, text: impl Into<String>) {
+        self.ui.top_notice = Some(TopNotice {
+            text: text.into(),
+            ttl_ticks: 60,
+        });
+    }
+
+    fn tick_top_notice(&mut self) {
+        if let Some(notice) = self.ui.top_notice.as_mut() {
+            notice.ttl_ticks = notice.ttl_ticks.saturating_sub(1);
+            if notice.ttl_ticks == 0 {
+                self.ui.top_notice = None;
+            }
+        }
+    }
+
     pub fn new() -> Self {
         let rng = 0xC0FFEE_u64 ^ (Instant::now().elapsed().as_nanos() as u64);
         let maps = Self::build_maps();
@@ -485,8 +545,14 @@ impl App {
                 hover_build_kind: None,
                 hover_map_select: None,
                 hover_multiplayer: None,
+                hover_main_menu: None,
+                hover_load_slot: None,
+                hover_load_wave: None,
+                top_notice: None,
                 hit: UiHitboxes::default(),
                 multiplayer_hit: MultiplayerHitboxes::default(),
+                main_menu_hit: MainMenuHitboxes::default(),
+                load_menu_hit: LoadMenuHitboxes::default(),
                 viewport: MapViewport::default(),
                 zoom: 1,
                 last_zoom: 1, // <-- NOVO
@@ -589,6 +655,9 @@ impl App {
         self.multiplayer.active = false;
         self.multiplayer.shutdown_network();
         self.multiplayer.cursors.clear();
+        self.ui.hover_main_menu = None;
+        self.ui.hover_load_slot = None;
+        self.ui.hover_load_wave = None;
     }
 
     pub fn enter_load_game(&mut self) {
@@ -596,6 +665,8 @@ impl App {
         self.multiplayer.shutdown_network();
         self.refresh_load_menu();
         self.screen = Screen::LoadGame;
+        self.ui.hover_load_slot = None;
+        self.ui.hover_load_wave = None;
     }
 
     pub fn refresh_load_menu(&mut self) {
@@ -770,46 +841,46 @@ impl App {
     }
 
     pub fn multiplayer_connect(&mut self) {
-        self.multiplayer.active = false;
         self.multiplayer.last_error = None;
         self.multiplayer.last_info = None;
         self.multiplayer.ensure_network();
 
-        match self.multiplayer.role {
-            MultiplayerRole::Host => {
-                self.multiplayer.status = ConnectionStatus::Connecting;
-                let info = self
-                    .multiplayer
-                    .local_endpoint
-                    .map(|addr| format!("aguardando conexao em {addr}"))
-                    .unwrap_or_else(|| "aguardando conexao".to_string());
-                self.multiplayer.last_info = Some(info);
-            }
-            MultiplayerRole::Peer => {
-                if self.multiplayer.peer_ip.trim().is_empty() {
-                    self.multiplayer.status = ConnectionStatus::Failed;
-                    self.multiplayer.last_error = Some("IP do host vazio".to_string());
-                    return;
-                }
-
-                let Some(addr) = self.parse_peer_addr() else {
-                    self.multiplayer.status = ConnectionStatus::Failed;
-                    self.multiplayer.last_error = Some("IP do host invalido".to_string());
-                    return;
-                };
-
-                if let Err(err) = self
-                    .multiplayer
-                    .send_net_command(NetCommand::ConnectPeer(addr))
-                {
-                    self.multiplayer.status = ConnectionStatus::Failed;
-                    self.multiplayer.last_error = Some(err);
-                    return;
-                }
-                self.multiplayer.status = ConnectionStatus::Connecting;
-                self.multiplayer.last_info = Some(format!("conectando em {addr}"));
-            }
+        if self.multiplayer.peer_ip.trim().is_empty() {
+            self.multiplayer.status = ConnectionStatus::Failed;
+            self.multiplayer.last_error = Some(match self.multiplayer.role {
+                MultiplayerRole::Host => "IP do player vazio".to_string(),
+                MultiplayerRole::Peer => "IP do host vazio".to_string(),
+            });
+            return;
         }
+
+        let Some(addr) = self.parse_peer_addr() else {
+            self.multiplayer.status = ConnectionStatus::Failed;
+            self.multiplayer.last_error = Some(match self.multiplayer.role {
+                MultiplayerRole::Host => "IP do player invalido".to_string(),
+                MultiplayerRole::Peer => "IP do host invalido".to_string(),
+            });
+            return;
+        };
+
+        self.multiplayer.active = false;
+        self.multiplayer.peer_name = None;
+        self.multiplayer.cursors.clear();
+
+        if let Err(err) = self
+            .multiplayer
+            .send_net_command(NetCommand::ConnectPeer(addr))
+        {
+            self.multiplayer.status = ConnectionStatus::Failed;
+            self.multiplayer.last_error = Some(err);
+            return;
+        }
+
+        self.multiplayer.status = ConnectionStatus::Connecting;
+        self.multiplayer.last_info = Some(match self.multiplayer.role {
+            MultiplayerRole::Host => format!("conectando player em {addr}"),
+            MultiplayerRole::Peer => format!("juntando-se ao host {addr}"),
+        });
     }
 
     pub fn multiplayer_kick_player(&mut self, index: usize) {
@@ -857,7 +928,19 @@ impl App {
             self.multiplayer.last_error = Some(err);
             return;
         }
-        self.screen = Screen::MapSelect;
+        if self.multiplayer.role == MultiplayerRole::Host {
+            let enter = NetMsg::EnterMapSelect {
+                map_index: self.map_index,
+            };
+            if let Err(err) = self.multiplayer.queue_game_msg(&enter) {
+                self.multiplayer.status = ConnectionStatus::Failed;
+                self.multiplayer.last_error = Some(err);
+                return;
+            }
+            self.screen = Screen::MapSelect;
+        } else {
+            self.multiplayer.last_info = Some("nome enviado. aguardando host...".to_string());
+        }
     }
 
     pub fn multiplayer_input_char(&mut self, ch: char) {
@@ -979,6 +1062,17 @@ impl App {
                 }
             }
             NetEvent::PeerDisconnected(peer) => {
+                let disconnected_name = self
+                    .multiplayer
+                    .peer_name
+                    .clone()
+                    .unwrap_or_else(|| {
+                        if self.multiplayer.role == MultiplayerRole::Peer {
+                            "Host".to_string()
+                        } else {
+                            "Player".to_string()
+                        }
+                    });
                 self.multiplayer.active = false;
                 self.multiplayer.peer_name = None;
                 self.multiplayer.cursors.clear();
@@ -990,8 +1084,29 @@ impl App {
                     self.multiplayer.status = ConnectionStatus::Failed;
                     self.multiplayer.last_error = Some(format!("peer desconectado: {peer}"));
                 }
+
+                self.show_top_notice(format!("{disconnected_name} foi desconectado."));
+                if self.multiplayer.role == MultiplayerRole::Peer {
+                    if self.screen == Screen::Game {
+                        self.enter_main_menu();
+                    } else {
+                        self.screen = Screen::Multiplayer;
+                        self.multiplayer.focus = MultiplayerFocus::Continue;
+                    }
+                }
             }
             NetEvent::PeerTimeout(peer) => {
+                let disconnected_name = self
+                    .multiplayer
+                    .peer_name
+                    .clone()
+                    .unwrap_or_else(|| {
+                        if self.multiplayer.role == MultiplayerRole::Peer {
+                            "Host".to_string()
+                        } else {
+                            "Player".to_string()
+                        }
+                    });
                 self.multiplayer.active = false;
                 self.multiplayer.peer_name = None;
                 self.multiplayer.cursors.clear();
@@ -1002,6 +1117,16 @@ impl App {
                 } else {
                     self.multiplayer.status = ConnectionStatus::Failed;
                     self.multiplayer.last_error = Some(format!("tempo esgotado {peer}"));
+                }
+
+                self.show_top_notice(format!("{disconnected_name} foi desconectado."));
+                if self.multiplayer.role == MultiplayerRole::Peer {
+                    if self.screen == Screen::Game {
+                        self.enter_main_menu();
+                    } else {
+                        self.screen = Screen::Multiplayer;
+                        self.multiplayer.focus = MultiplayerFocus::Continue;
+                    }
                 }
             }
             NetEvent::PublicEndpointObserved(addr) => {
@@ -1053,6 +1178,21 @@ impl App {
                 self.multiplayer.last_error =
                     Some(reason.unwrap_or_else(|| "expulso do lobby".to_string()));
                 self.multiplayer.shutdown_network();
+                self.screen = Screen::Multiplayer;
+                self.multiplayer.focus = MultiplayerFocus::Continue;
+            }
+            NetMsg::EnterMapSelect { map_index } => {
+                if self.multiplayer.role != MultiplayerRole::Peer {
+                    return;
+                }
+                if !self.multiplayer.active || self.multiplayer.status != ConnectionStatus::Connected {
+                    return;
+                }
+                if self.maps.is_empty() {
+                    return;
+                }
+                self.map_index = map_index.min(self.maps.len().saturating_sub(1));
+                self.screen = Screen::MapSelect;
             }
             NetMsg::SetMap { map_index } => {
                 if self.multiplayer.role != MultiplayerRole::Peer {
@@ -1117,6 +1257,12 @@ impl App {
                     return;
                 }
                 self.apply_snapshot(state);
+            }
+            NetMsg::Fx { events } => {
+                if self.multiplayer.role != MultiplayerRole::Peer {
+                    return;
+                }
+                self.apply_fx_events(events);
             }
         }
     }
@@ -1186,6 +1332,7 @@ impl App {
     }
 
     fn apply_snapshot(&mut self, state: GameSnapshot) {
+        let wave_before = self.game.wave;
         let selected_cell = self.game.selected_cell;
         let build_kind = self.game.build_kind;
         let pending_build = self.game.pending_build;
@@ -1201,6 +1348,114 @@ impl App {
         self.game.selected_cell = selected_cell;
         self.game.build_kind = build_kind;
         self.game.pending_build = pending_build;
+
+        if self.game.wave != wave_before {
+            self.game.projectiles.clear();
+            self.game.fx.clear();
+        }
+    }
+
+    fn queue_fx_event(&mut self, event: FxEvent) {
+        if !self.multiplayer.active || self.multiplayer.role != MultiplayerRole::Host {
+            return;
+        }
+        self.multiplayer.pending_fx.push(event);
+    }
+
+    fn apply_fx_events(&mut self, events: Vec<FxEvent>) {
+        if self.screen != Screen::Game {
+            return;
+        }
+        if !self.multiplayer.active || self.multiplayer.status != ConnectionStatus::Connected {
+            return;
+        }
+
+        for event in events {
+            match event {
+                FxEvent::Projectile {
+                    kind,
+                    from_x,
+                    from_y,
+                    to_x,
+                    to_y,
+                    ttl,
+                    seed,
+                    muzzle_seed,
+                    tracer_seed,
+                } => {
+                    let from = Vec2i::new(from_x as i16, from_y as i16);
+                    let to = Vec2i::new(to_x as i16, to_y as i16);
+                    let dir = Vec2i::new((to.x - from.x).signum(), (to.y - from.y).signum());
+
+                    let ttl_fx = ttl.min(u8::MAX as u16) as u8;
+                    let fx_id = self.game.fx.spawn_projectile(kind, from, to, ttl_fx, seed);
+                    self.game.fx.spawn_muzzle(kind, from, dir, muzzle_seed);
+                    if let Some(tracer_seed) = tracer_seed {
+                        self.game.fx.spawn_tracer_line(from, to, tracer_seed);
+                    }
+
+                    if let Some(fx_id) = fx_id {
+                        self.game.projectiles.push(Projectile {
+                            x: from.x,
+                            y: from.y,
+                            tx: to.x,
+                            ty: to.y,
+                            ttl,
+                            damage: 0,
+                            step_cd: Self::projectile_step_cd(kind),
+                            kind,
+                            source_level: 0,
+                            fx_id: Some(fx_id),
+                        });
+                    }
+                }
+                FxEvent::Impact { kind, x, y, seed } => {
+                    let pos = Vec2i::new(x as i16, y as i16);
+                    match kind {
+                        TowerKind::Cannon => {
+                            self.game.fx.spawn_impact_ring(pos, seed);
+                            self.game.fx.spawn_dust(pos, seed ^ 0xA53C);
+                        }
+                        TowerKind::Tesla => {
+                            self.game.fx.spawn_target_flash(pos, seed);
+                        }
+                        TowerKind::Frost => {
+                            self.game.fx.spawn_shatter(pos, seed);
+                        }
+                        TowerKind::Sniper | TowerKind::Rapid | TowerKind::Basic => {
+                            self.game.fx.spawn_impact_cross(pos, kind, seed);
+                        }
+                    }
+                }
+                FxEvent::ArcLightning {
+                    from_x,
+                    from_y,
+                    to_x,
+                    to_y,
+                    seed,
+                } => {
+                    self.game.fx.spawn_arc_lightning(
+                        Vec2i::new(from_x as i16, from_y as i16),
+                        Vec2i::new(to_x as i16, to_y as i16),
+                        seed,
+                    );
+                }
+                FxEvent::TargetFlash { x, y, seed } => {
+                    self.game
+                        .fx
+                        .spawn_target_flash(Vec2i::new(x as i16, y as i16), seed);
+                }
+                FxEvent::Dust { x, y, seed } => {
+                    self.game.fx.spawn_dust(Vec2i::new(x as i16, y as i16), seed);
+                }
+                FxEvent::Shatter { x, y, seed } => {
+                    self.game.fx.spawn_shatter(Vec2i::new(x as i16, y as i16), seed);
+                }
+                FxEvent::StatusOverlay { target, ttl, seed } => {
+                    self.game.fx.spawn_status_overlay(target, ttl, seed);
+                }
+            }
+        }
     }
 
     fn send_multiplayer_cursor(&mut self) {
@@ -1238,6 +1493,23 @@ impl App {
             .multiplayer
             .queue_game_msg(&NetMsg::State { state: snap })
         {
+            self.multiplayer.status = ConnectionStatus::Failed;
+            self.multiplayer.last_error = Some(err);
+        }
+    }
+
+    fn send_multiplayer_fx(&mut self) {
+        if !self.multiplayer.active || self.multiplayer.role != MultiplayerRole::Host {
+            self.multiplayer.pending_fx.clear();
+            return;
+        }
+
+        if self.multiplayer.pending_fx.is_empty() {
+            return;
+        }
+
+        let events = std::mem::take(&mut self.multiplayer.pending_fx);
+        if let Err(err) = self.multiplayer.queue_game_msg(&NetMsg::Fx { events }) {
             self.multiplayer.status = ConnectionStatus::Failed;
             self.multiplayer.last_error = Some(err);
         }
@@ -1325,6 +1597,9 @@ impl App {
         self.ui.hover_button = None;
         self.ui.hover_map_select = None;
         self.ui.hover_multiplayer = None;
+        self.ui.hover_main_menu = None;
+        self.ui.hover_load_slot = None;
+        self.ui.hover_load_wave = None;
         self.ui.viewport = MapViewport::default();
         self.ui.manual_pan = false;
         self.ui.drag_origin = None;
@@ -1409,15 +1684,20 @@ impl App {
 
     pub fn on_tick_if_due(&mut self) {
         if self.last_tick.elapsed() >= self.tick_rate {
+            
             self.last_tick = Instant::now();
+            self.tick_top_notice();
             self.poll_network_events();
+
             if self.screen == Screen::Game {
                 self.update_multiplayer_cursors();
                 if !(self.multiplayer.active && self.is_multiplayer_peer()) {
                     self.on_tick();
                     self.send_multiplayer_state();
+                    self.send_multiplayer_fx();
                 } else {
                     self.tick_fx();
+                    self.tick_projectiles_fx_only();
                 }
                 self.send_multiplayer_cursor();
             } else {
@@ -1481,6 +1761,52 @@ impl App {
 
     fn tick_fx(&mut self) {
         self.game.fx.tick();
+    }
+
+    fn tick_projectiles_fx_only(&mut self) {
+        if !self.game.running {
+            return;
+        }
+
+        let sp = self.game.speed.max(1) as u16;
+
+        for p in &mut self.game.projectiles {
+            if p.ttl > 0 {
+                p.ttl -= 1;
+            }
+            if p.ttl == 0 {
+                if let Some(fx_id) = p.fx_id {
+                    self.game.fx.despawn(fx_id);
+                }
+                continue;
+            }
+
+            if p.step_cd > sp {
+                p.step_cd -= sp;
+                continue;
+            }
+            p.step_cd = Self::projectile_step_cd(p.kind);
+
+            let dx = (p.tx - p.x).signum();
+            let dy = (p.ty - p.y).signum();
+            p.x += dx;
+            p.y += dy;
+
+            if let Some(fx_id) = p.fx_id {
+                self.game
+                    .fx
+                    .update_projectile_pos(fx_id, Vec2i::new(p.x, p.y), Vec2i::new(dx, dy));
+            }
+
+            if p.x == p.tx && p.y == p.ty {
+                p.ttl = 0;
+                if let Some(fx_id) = p.fx_id {
+                    self.game.fx.despawn(fx_id);
+                }
+            }
+        }
+
+        self.game.projectiles.retain(|p| p.ttl > 0);
     }
 
     fn tick_enemies(&mut self) {
@@ -1618,6 +1944,7 @@ impl App {
         for (target, ttl) in status_overlays {
             let seed = self.rand_u32();
             self.game.fx.spawn_status_overlay(target, ttl, seed);
+            self.queue_fx_event(FxEvent::StatusOverlay { target, ttl, seed });
         }
 
         for (kind, hit_x, hit_y, damage, level, _fx_id) in on_hits {
@@ -1793,10 +2120,25 @@ impl App {
 
         let muzzle_seed = self.rand_u32();
         self.game.fx.spawn_muzzle(kind, from, dir, muzzle_seed);
-        if kind == TowerKind::Sniper {
+        let tracer_seed = if kind == TowerKind::Sniper {
             let tracer_seed = self.rand_u32();
             self.game.fx.spawn_tracer_line(from, to, tracer_seed);
-        }
+            Some(tracer_seed)
+        } else {
+            None
+        };
+
+        self.queue_fx_event(FxEvent::Projectile {
+            kind,
+            from_x,
+            from_y,
+            to_x,
+            to_y,
+            ttl,
+            seed,
+            muzzle_seed,
+            tracer_seed,
+        });
     }
 
     fn spawn_impact(&mut self, x: u16, y: u16, kind: TowerKind, _level: u8) {
@@ -1817,6 +2159,8 @@ impl App {
                 self.game.fx.spawn_impact_cross(pos, kind, seed);
             }
         }
+
+        self.queue_fx_event(FxEvent::Impact { kind, x, y, seed });
     }
 
     fn apply_tesla_chain(&mut self, x: u16, y: u16, damage: i32, level: u8) {
@@ -1858,6 +2202,19 @@ impl App {
             self.game
                 .fx
                 .spawn_target_flash(Vec2i::new(ex as i16, ey as i16), flash_seed);
+
+            self.queue_fx_event(FxEvent::ArcLightning {
+                from_x: x,
+                from_y: y,
+                to_x: ex,
+                to_y: ey,
+                seed: arc_seed,
+            });
+            self.queue_fx_event(FxEvent::TargetFlash {
+                x: ex,
+                y: ey,
+                seed: flash_seed,
+            });
         }
     }
 
@@ -1888,6 +2245,11 @@ impl App {
             let pos = Vec2i::new(fx_x, fx_y);
             let seed = self.rand_u32();
             self.game.fx.spawn_dust(pos, seed);
+            self.queue_fx_event(FxEvent::Dust {
+                x: fx_x.max(0) as u16,
+                y: fx_y.max(0) as u16,
+                seed,
+            });
         }
     }
 
@@ -1918,6 +2280,17 @@ impl App {
                 slow_ticks.min(u8::MAX as u16) as u8,
                 overlay_seed,
             );
+
+            self.queue_fx_event(FxEvent::Shatter {
+                x: fx_x.max(0) as u16,
+                y: fx_y.max(0) as u16,
+                seed: shatter_seed,
+            });
+            self.queue_fx_event(FxEvent::StatusOverlay {
+                target: idx,
+                ttl: slow_ticks.min(u8::MAX as u16) as u8,
+                seed: overlay_seed,
+            });
         }
     }
 

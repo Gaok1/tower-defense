@@ -25,12 +25,64 @@ pub enum NetCmd {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
+pub enum FxEvent {
+    Projectile {
+        kind: TowerKind,
+        from_x: u16,
+        from_y: u16,
+        to_x: u16,
+        to_y: u16,
+        ttl: u16,
+        seed: u32,
+        muzzle_seed: u32,
+        tracer_seed: Option<u32>,
+    },
+    Impact {
+        kind: TowerKind,
+        x: u16,
+        y: u16,
+        seed: u32,
+    },
+    ArcLightning {
+        from_x: u16,
+        from_y: u16,
+        to_x: u16,
+        to_y: u16,
+        seed: u32,
+    },
+    TargetFlash {
+        x: u16,
+        y: u16,
+        seed: u32,
+    },
+    Dust {
+        x: u16,
+        y: u16,
+        seed: u32,
+    },
+    Shatter {
+        x: u16,
+        y: u16,
+        seed: u32,
+    },
+    StatusOverlay {
+        target: usize,
+        ttl: u8,
+        seed: u32,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "t", rename_all = "snake_case")]
 pub enum NetMsg {
     Hello {
         name: String,
     },
     Kick {
         reason: Option<String>,
+    },
+    EnterMapSelect {
+        map_index: usize,
     },
     SetMap {
         map_index: usize,
@@ -54,5 +106,8 @@ pub enum NetMsg {
     },
     State {
         state: GameSnapshot,
+    },
+    Fx {
+        events: Vec<FxEvent>,
     },
 }
