@@ -1925,6 +1925,7 @@ impl App {
 
     fn tick_enemies(&mut self) {
         let sp = self.game.speed.max(1) as u16;
+        let wave = self.game.wave;
         let mut healer_pulses: Vec<(u16, u16, u16, i32)> = Vec::new();
 
         for e in &mut self.game.enemies {
@@ -1937,7 +1938,7 @@ impl App {
             } else {
                 e.slow_percent = 0;
             }
-            let tuning = self.enemy_tuning(e.kind, self.game.wave);
+            let tuning = Self::enemy_tuning(e.kind, wave);
             let effective_slow = Self::apply_slow_resist(e.slow_percent, tuning.slow_resist);
             let slow_factor = 100u16.saturating_sub(effective_slow as u16);
             let effective_sp = (sp * slow_factor / 100).max(1);
@@ -1969,7 +1970,6 @@ impl App {
             return;
         }
 
-        let wave = self.game.wave;
         for (hx, hy, radius, amount) in healer_pulses {
             for enemy in &mut self.game.enemies {
                 if enemy.hp <= 0 {
@@ -1979,7 +1979,7 @@ impl App {
                 if manhattan(hx, hy, ex, ey) > radius {
                     continue;
                 }
-                let max_hp = self.enemy_tuning(enemy.kind, wave).base_hp;
+                let max_hp = Self::enemy_tuning(enemy.kind, wave).base_hp;
                 enemy.hp = (enemy.hp + amount).min(max_hp);
             }
         }
@@ -1987,6 +1987,7 @@ impl App {
 
     fn tick_towers(&mut self) {
         let sp = self.game.speed.max(1) as u16;
+        let wave = self.game.wave;
         let mut spawns: Vec<(u16, u16, u16, u16, i32, TowerKind, u8)> = Vec::new();
 
         for t in &mut self.game.towers {
@@ -1997,11 +1998,12 @@ impl App {
             t.cooldown = 0;
 
             let stats = Self::tower_stats(t);
-            let Some((tx, ty)) = self.acquire_target(
+            let Some((tx, ty)) = Self::acquire_target(
                 t,
                 self.game.enemies.as_slice(),
                 self.game.path.as_slice(),
                 stats.range,
+                wave,
             ) else {
                 continue;
             };
@@ -2017,6 +2019,7 @@ impl App {
 
     fn tick_projectiles(&mut self) {
         let sp = self.game.speed.max(1) as u16;
+        let wave = self.game.wave;
         let mut impacts: Vec<(u16, u16, TowerKind, u8, Option<usize>)> = Vec::new();
         let mut on_hits: Vec<(TowerKind, u16, u16, i32, u8, Option<usize>)> = Vec::new();
         let mut status_overlays: Vec<(usize, u8)> = Vec::new();
@@ -2061,7 +2064,7 @@ impl App {
                     hit_y,
                 ) {
                     let e = &mut self.game.enemies[ei];
-                    let tuning = self.enemy_tuning(e.kind, self.game.wave);
+                    let tuning = Self::enemy_tuning(e.kind, wave);
                     let mut damage = p.damage;
                     if p.kind == TowerKind::Rapid {
                         damage = Self::apply_damage_resist(damage, tuning.rapid_resist);
@@ -2150,12 +2153,12 @@ impl App {
         let mut attempts = 0;
         while budget > 0 && spawned < max_enemies && attempts < 100 {
             let mut kind = self.pick_enemy_kind(wave);
-            let mut tuning = self.enemy_tuning(kind, wave);
-            let mut cost = self.enemy_budget_cost(kind, tuning);
+            let mut tuning = Self::enemy_tuning(kind, wave);
+            let mut cost = Self::enemy_budget_cost(kind, tuning);
             if cost as i32 > budget {
                 kind = EnemyKind::Swarm;
-                tuning = self.enemy_tuning(kind, wave);
-                cost = self.enemy_budget_cost(kind, tuning);
+                tuning = Self::enemy_tuning(kind, wave);
+                cost = Self::enemy_budget_cost(kind, tuning);
                 if cost as i32 > budget {
                     break;
                 }
@@ -2235,8 +2238,8 @@ impl App {
         }
     }
 
-    fn enemy_tuning(&self, kind: EnemyKind, wave: i32) -> EnemyTuning {
-        let base = self.enemy_base_move_cd();
+    fn enemy_tuning(kind: EnemyKind, wave: i32) -> EnemyTuning {
+        let base = Self::enemy_base_move_cd();
         let wave = wave.max(1);
         match kind {
             EnemyKind::Swarm => EnemyTuning {
@@ -2296,9 +2299,9 @@ impl App {
         }
     }
 
-    fn enemy_budget_cost(&self, kind: EnemyKind, tuning: EnemyTuning) -> i32 {
+    fn enemy_budget_cost(kind: EnemyKind, tuning: EnemyTuning) -> i32 {
         let hp_cost = (tuning.base_hp / 25).max(1);
-        let base_cd = self.enemy_base_move_cd() as i32;
+        let base_cd = Self::enemy_base_move_cd() as i32;
         let speed_cost = ((base_cd - tuning.move_cd as i32).max(0) / 2) + 1;
         let kind_cost = match kind {
             EnemyKind::Swarm => 0,
@@ -2342,7 +2345,7 @@ impl App {
         EnemyKind::Swarm
     }
 
-    fn enemy_base_move_cd(&self) -> u16 {
+    fn enemy_base_move_cd() -> u16 {
         // 50ms por tick
         // 14 ticks = 700ms por tile (bem mais lento)
         14
@@ -2556,6 +2559,7 @@ impl App {
 
     fn apply_cannon_splash(&mut self, x: u16, y: u16, damage: i32, level: u8) {
         let (radius, percent) = Self::cannon_splash_params(level);
+        let wave = self.game.wave;
         let mut fx_spawns: Vec<(i16, i16)> = Vec::new();
         for e in &mut self.game.enemies {
             if e.hp <= 0 {
@@ -2566,7 +2570,7 @@ impl App {
             if dist == 0 || dist > radius {
                 continue;
             }
-            let tuning = self.enemy_tuning(e.kind, self.game.wave);
+            let tuning = Self::enemy_tuning(e.kind, wave);
             let splash_damage = ((damage as f32) * (percent as f32 / 100.0)).round() as i32;
             let splash_damage =
                 Self::apply_damage_resist(splash_damage, tuning.splash_resist);
@@ -2644,13 +2648,13 @@ impl App {
     }
 
     fn acquire_target(
-        &self,
         tower: &Tower,
         enemies: &[Enemy],
         path: &[(u16, u16)],
         range: u16,
+        wave: i32,
     ) -> Option<(u16, u16)> {
-        let effective_range = self.effective_tower_range(tower, enemies, path, range);
+        let effective_range = Self::effective_tower_range(tower, enemies, path, range);
         let mut best: Option<(u16, u16, i32, usize, u16)> = None; // (ex, ey, score, path_i, dist)
         let path_len = path.len().max(1);
         for e in enemies {
@@ -2662,7 +2666,7 @@ impl App {
             if dist > effective_range {
                 continue;
             }
-            let score = self.score_target(tower, e, path_len, dist);
+            let score = Self::score_target(tower, e, path_len, dist, wave);
             match best {
                 None => best = Some((ex, ey, score, e.path_i, dist)),
                 Some((_, _, best_score, best_path_i, best_dist)) => {
@@ -2680,7 +2684,6 @@ impl App {
     }
 
     fn effective_tower_range(
-        &self,
         tower: &Tower,
         enemies: &[Enemy],
         path: &[(u16, u16)],
@@ -2705,8 +2708,8 @@ impl App {
         }
     }
 
-    fn score_target(&self, tower: &Tower, enemy: &Enemy, path_len: usize, dist: u16) -> i32 {
-        let tuning = self.enemy_tuning(enemy.kind, self.game.wave);
+    fn score_target(tower: &Tower, enemy: &Enemy, path_len: usize, dist: u16, wave: i32) -> i32 {
+        let tuning = Self::enemy_tuning(enemy.kind, wave);
         let speed_score = (1000 / tuning.move_cd.max(1) as i32).max(1);
         let progress = enemy.path_i as i32;
         let path_len = path_len as i32;
