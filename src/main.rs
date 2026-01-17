@@ -3,6 +3,7 @@ mod assets;
 mod fx;
 mod input;
 mod save;
+mod stun;
 mod ui;
 
 use anyhow::Result;
