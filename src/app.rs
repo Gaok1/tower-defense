@@ -2120,12 +2120,15 @@ impl App {
             self.game.money_cd = 1;
         }
         // dinheiro por segundo (não por tick)
-        if self.game.money_cd > 0 {
-            self.game.money_cd -= 1;
-        } else {
-            // ganho lento, pra combinar com ritmo mais "tático"
-            self.game.money = self.game.money.saturating_add(2);
-            self.game.money_cd = 20; // 20 ticks * 50ms = 1s
+        let passive_money_allowed = !self.game.pending_wave_start || self.game.prep_ticks < 60;
+        if passive_money_allowed {
+            if self.game.money_cd > 0 {
+                self.game.money_cd -= 1;
+            } else {
+                // ganho lento, pra combinar com ritmo mais "tático"
+                self.game.money = self.game.money.saturating_add(2);
+                self.game.money_cd = 20; // 20 ticks * 50ms = 1s
+            }
         }
 
         let alive = self.game.enemies.iter().any(|e| e.hp > 0);
