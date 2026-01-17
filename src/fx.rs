@@ -14,7 +14,7 @@ const MAX_PROJECTILE: u16 = 2000;
 
 const MAX_DUST_CELLS: usize = 6;
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Vec2i {
     pub x: i16,
     pub y: i16,
@@ -38,11 +38,10 @@ pub enum FxKind {
     TargetFlash,
     Shatter,
     StatusOverlay,
-    CameraImpulse,
 }
 
 impl FxKind {
-    pub const COUNT: usize = 11;
+    pub const COUNT: usize = 10;
 
     pub fn index(self) -> usize {
         match self {
@@ -56,7 +55,6 @@ impl FxKind {
             FxKind::TargetFlash => 7,
             FxKind::Shatter => 8,
             FxKind::StatusOverlay => 9,
-            FxKind::CameraImpulse => 10,
         }
     }
 }
@@ -101,10 +99,6 @@ pub enum FxData {
     StatusOverlay {
         target: usize,
         kind: StatusOverlayKind,
-    },
-    CameraImpulse {
-        dx: i16,
-        dy: i16,
     },
 }
 
@@ -170,13 +164,13 @@ enum FxLod {
     High,
 }
 
+#[derive(Debug, Clone)]
 pub struct FxManager {
     slots: Vec<FxSlot>,
     free_list: Vec<usize>,
     buckets: Vec<Vec<usize>>,
     config: FxConfig,
     stats: FxFrameStats,
-    camera_offset: Vec2i,
     active_counts: [u16; FxKind::COUNT],
     spawn_culled_by_kind: u16,
 }
@@ -211,7 +205,6 @@ impl FxManager {
                 max_by_kind,
             },
             stats: FxFrameStats::default(),
-            camera_offset: Vec2i::default(),
             active_counts: [0; FxKind::COUNT],
             spawn_culled_by_kind: 0,
         }
@@ -226,23 +219,15 @@ impl FxManager {
             self.free_list.push(idx);
         }
         self.stats = FxFrameStats::default();
-        self.camera_offset = Vec2i::default();
         self.active_counts = [0; FxKind::COUNT];
         self.spawn_culled_by_kind = 0;
     }
 
     pub fn tick(&mut self) {
-        self.camera_offset = Vec2i::default();
         self.spawn_culled_by_kind = 0;
         for slot in &mut self.slots {
             if !slot.active {
                 continue;
-            }
-            if matches!(slot.entity.data, FxData::CameraImpulse { .. }) {
-                if let FxData::CameraImpulse { dx, dy } = slot.entity.data {
-                    self.camera_offset.x += dx;
-                    self.camera_offset.y += dy;
-                }
             }
             slot.entity.ttl = slot.entity.ttl.saturating_sub(1);
             slot.entity.age = slot.entity.age.saturating_add(1);
@@ -253,10 +238,6 @@ impl FxManager {
             }
         }
         self.rebuild_free_list();
-    }
-
-    pub fn camera_offset(&self) -> Vec2i {
-        self.camera_offset
     }
 
     pub fn stats(&self) -> FxFrameStats {
@@ -481,19 +462,6 @@ impl FxManager {
         self.spawn_entity(entity, false);
     }
 
-    pub fn spawn_camera_impulse(&mut self, dx: i16, dy: i16) {
-        let entity = FxEntity {
-            kind: FxKind::CameraImpulse,
-            pos: Vec2i::default(),
-            ttl: 1,
-            age: 0,
-            priority: 0,
-            seed: 0,
-            data: FxData::CameraImpulse { dx, dy },
-        };
-        self.spawn_entity(entity, true);
-    }
-
     pub fn render(
         &mut self,
         buf: &mut Buffer,
@@ -515,9 +483,6 @@ impl FxManager {
             }
             let kind = slot.entity.kind;
             self.stats.active_by_kind[kind.index()] += 1;
-            if kind == FxKind::CameraImpulse {
-                continue;
-            }
             let bucket = &mut self.buckets[slot.entity.priority as usize];
             bucket.push(idx);
         }
@@ -570,7 +535,7 @@ impl FxManager {
                 } else {
                     profile.glyph_fade.unwrap_or(profile.glyph_main)
                 };
-                used += draw_cell(
+                used += draw_fx_cell(
                     entity.pos,
                     glyph,
                     tower_kind_color(kind),
@@ -594,26 +559,44 @@ impl FxManager {
                 if points.len() > max_len {
                     points.truncate(max_len);
                 }
-                for window in points.windows(2) {
-                    if *budget <= 0 {
-                        break;
+
+                let mut first: Option<(u16, u16)> = None;
+                let mut last: Option<(u16, u16)> = None;
+                for p in points {
+                    if let Some(s) = map_to_screen(p, area, viewport) {
+                        if first.is_none() {
+                            first = Some(s);
+                        }
+                        last = Some(s);
                     }
-                    let from = window[0];
-                    let to = window[1];
-                    if from == to {
-                        continue;
+                }
+
+                let glyph = line_glyph(from, to);
+                match (first, last) {
+                    (Some(a), Some(b)) if a != b => {
+                        used += draw_screen_line(
+                            a,
+                            b,
+                            Color::LightCyan,
+                            Modifier::BOLD,
+                            buf,
+                            area,
+                            budget,
+                        );
                     }
-                    let glyph = line_glyph(from, to);
-                    used += draw_cell(
-                        from,
-                        glyph,
-                        Color::LightCyan,
-                        Modifier::BOLD,
-                        buf,
-                        area,
-                        viewport,
-                        budget,
-                    );
+                    (Some(a), _) => {
+                        used += draw_screen_cell(
+                            a.0,
+                            a.1,
+                            glyph,
+                            Color::LightCyan,
+                            Modifier::BOLD,
+                            buf,
+                            area,
+                            budget,
+                        );
+                    }
+                    _ => {}
                 }
             }
             FxKind::Projectile => {
@@ -626,7 +609,7 @@ impl FxManager {
                 else {
                     return 0;
                 };
-                used += draw_cell(
+                used += draw_fx_cell(
                     entity.pos,
                     glyph_head,
                     tower_kind_color(kind),
@@ -658,7 +641,7 @@ impl FxManager {
                 let FxData::ImpactCross { kind } = entity.data else {
                     return 0;
                 };
-                used += draw_cell(
+                used += draw_fx_cell(
                     entity.pos,
                     glyph,
                     tower_kind_color(kind),
@@ -674,7 +657,7 @@ impl FxManager {
                     return 0;
                 };
                 if entity.age == 0 {
-                    used += draw_cell(
+                    used += draw_fx_cell(
                         entity.pos,
                         "█",
                         Color::LightRed,
@@ -701,7 +684,7 @@ impl FxManager {
                         budget,
                     );
                 } else {
-                    used += draw_cell(
+                    used += draw_fx_cell(
                         entity.pos,
                         "▒",
                         Color::LightRed,
@@ -753,38 +736,55 @@ impl FxManager {
                 if points.len() > max_seg {
                     points.truncate(max_seg);
                 }
+
+                let tile = viewport.tile_w.min(viewport.tile_h) as i16;
+                let jitter = (tile / 6).clamp(1, 2);
+                let x_min = area.x as i16;
+                let y_min = area.y as i16;
+                let x_max = area.right().saturating_sub(1) as i16;
+                let y_max = area.bottom().saturating_sub(1) as i16;
+
                 let mut seed = entity.seed;
                 for window in points.windows(2) {
                     if *budget <= 0 {
                         break;
                     }
-                    let mut p0 = window[0];
-                    let mut p1 = window[1];
+                    let p0 = window[0];
+                    let p1 = window[1];
+
+                    let (mut x0, y0) = match map_to_screen(p0, area, viewport) {
+                        Some(v) => (v.0 as i16, v.1 as i16),
+                        None => continue,
+                    };
+                    let (x1, mut y1) = match map_to_screen(p1, area, viewport) {
+                        Some(v) => (v.0 as i16, v.1 as i16),
+                        None => continue,
+                    };
+
                     seed = xorshift32(seed);
                     if seed % 3 == 0 {
-                        let jitter = if seed % 2 == 0 { 1 } else { -1 };
-                        p0.x = p0.x.saturating_add(jitter);
+                        let j = if seed % 2 == 0 { jitter } else { -jitter };
+                        x0 = (x0 + j).clamp(x_min, x_max);
                     }
                     seed = xorshift32(seed);
                     if seed % 3 == 0 {
-                        let jitter = if seed % 2 == 0 { 1 } else { -1 };
-                        p1.y = p1.y.saturating_add(jitter);
+                        let j = if seed % 2 == 0 { jitter } else { -jitter };
+                        y1 = (y1 + j).clamp(y_min, y_max);
                     }
-                    let glyph = line_glyph(p0, p1);
-                    used += draw_cell(
-                        p0,
-                        glyph,
+
+                    used += draw_screen_line(
+                        (x0 as u16, y0 as u16),
+                        (x1 as u16, y1 as u16),
                         Color::LightBlue,
                         Modifier::BOLD,
                         buf,
                         area,
-                        viewport,
                         budget,
                     );
                 }
             }
             FxKind::TargetFlash => {
-                used += draw_cell(
+                used += draw_fx_cell(
                     entity.pos,
                     "▓",
                     Color::LightBlue,
@@ -797,7 +797,7 @@ impl FxManager {
             }
             FxKind::Shatter => {
                 let glyph = if entity.age == 0 { "╳" } else { "░" };
-                used += draw_cell(
+                used += draw_fx_cell(
                     entity.pos,
                     glyph,
                     Color::LightBlue,
@@ -818,7 +818,7 @@ impl FxManager {
                     }
                     let (ex, ey) = path.get(enemy.path_i).copied().unwrap_or((0, 0));
                     let glyph = if entity.age % 2 == 0 { "▓" } else { "▒" };
-                    used += draw_cell(
+                    used += draw_fx_cell(
                         Vec2i::new(ex as i16, ey as i16),
                         glyph,
                         Color::Cyan,
@@ -830,7 +830,6 @@ impl FxManager {
                     );
                 }
             }
-            FxKind::CameraImpulse => {}
         }
         used
     }
@@ -991,6 +990,165 @@ fn line_points(from: Vec2i, to: Vec2i) -> Vec<Vec2i> {
         }
     }
     points
+}
+
+fn draw_screen_cell(
+    x: u16,
+    y: u16,
+    glyph: &'static str,
+    color: Color,
+    modifier: Modifier,
+    buf: &mut Buffer,
+    area: Rect,
+    budget: &mut i32,
+) -> u16 {
+    if *budget <= 0 {
+        return 0;
+    }
+    if x < area.x || y < area.y || x >= area.right() || y >= area.bottom() {
+        return 0;
+    }
+    if let Some(cell) = buf.cell_mut((x, y)) {
+        let style = cell.style().fg(color).add_modifier(modifier);
+        cell.set_symbol(glyph).set_style(style);
+        *budget -= 1;
+        return 1;
+    }
+    0
+}
+
+fn draw_screen_line(
+    from: (u16, u16),
+    to: (u16, u16),
+    color: Color,
+    modifier: Modifier,
+    buf: &mut Buffer,
+    area: Rect,
+    budget: &mut i32,
+) -> u16 {
+    let (mut x0, mut y0) = (from.0 as i32, from.1 as i32);
+    let (x1, y1) = (to.0 as i32, to.1 as i32);
+
+    let dx = (x1 - x0).abs();
+    let dy = -(y1 - y0).abs();
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let sy = if y0 < y1 { 1 } else { -1 };
+    let mut err = dx + dy;
+
+    let mut used = 0u16;
+    let mut prev = (x0, y0);
+    loop {
+        if *budget <= 0 {
+            break;
+        }
+
+        let step_dx = (x0 - prev.0).clamp(-1, 1) as i16;
+        let step_dy = (y0 - prev.1).clamp(-1, 1) as i16;
+        let glyph = if step_dx == 0 && step_dy == 0 {
+            // primeiro ponto
+            let ddx = (x1 - x0).signum() as i16;
+            let ddy = (y1 - y0).signum() as i16;
+            line_glyph(Vec2i::default(), Vec2i::new(ddx, ddy))
+        } else {
+            line_glyph(Vec2i::default(), Vec2i::new(step_dx, step_dy))
+        };
+
+        used += draw_screen_cell(
+            x0 as u16,
+            y0 as u16,
+            glyph,
+            color,
+            modifier,
+            buf,
+            area,
+            budget,
+        );
+
+        if x0 == x1 && y0 == y1 {
+            break;
+        }
+
+        prev = (x0, y0);
+        let e2 = 2 * err;
+        if e2 >= dy {
+            err += dy;
+            x0 += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            y0 += sy;
+        }
+    }
+    used
+}
+
+fn draw_fx_cell(
+    pos: Vec2i,
+    glyph: &'static str,
+    color: Color,
+    modifier: Modifier,
+    buf: &mut Buffer,
+    area: Rect,
+    viewport: MapViewport,
+    budget: &mut i32,
+) -> u16 {
+    let Some((cx, cy)) = map_to_screen(pos, area, viewport) else {
+        return 0;
+    };
+
+    let mut used = 0u16;
+    used += draw_screen_cell(cx, cy, glyph, color, modifier, buf, area, budget);
+
+    let tile = viewport.tile_w.min(viewport.tile_h);
+    let radius = (tile / 8).min(2);
+    if radius == 0 {
+        return used;
+    }
+
+    let halo = ".";
+    let (cx, cy) = (cx as i16, cy as i16);
+    let x_min = area.x as i16;
+    let y_min = area.y as i16;
+    let x_max = area.right().saturating_sub(1) as i16;
+    let y_max = area.bottom().saturating_sub(1) as i16;
+
+    const OFFSETS_R1: [(i16, i16); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+    const OFFSETS_R2: [(i16, i16); 8] = [
+        (1, 0),
+        (-1, 0),
+        (0, 1),
+        (0, -1),
+        (2, 0),
+        (-2, 0),
+        (0, 2),
+        (0, -2),
+    ];
+
+    let offsets: &[(i16, i16)] = match radius {
+        1 => &OFFSETS_R1,
+        2 => &OFFSETS_R2,
+        _ => &[],
+    };
+
+    for &(dx, dy) in offsets {
+        if *budget <= 0 {
+            break;
+        }
+        let x = (cx + dx).clamp(x_min, x_max);
+        let y = (cy + dy).clamp(y_min, y_max);
+        used += draw_screen_cell(
+            x as u16,
+            y as u16,
+            halo,
+            color,
+            Modifier::DIM,
+            buf,
+            area,
+            budget,
+        );
+    }
+
+    used
 }
 
 fn draw_cell(

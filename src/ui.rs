@@ -945,22 +945,13 @@ fn draw_sprite(
 }
 
 struct MapWidget<'a> {
-    app: &'a App,
+    app: &'a mut App,
 }
 
 impl<'a> Widget for MapWidget<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let app = self.app;
-        let mut vp = app.ui.viewport;
-        let shake = app.game.fx.camera_offset();
-        if shake.x != 0 || shake.y != 0 {
-            let max_x = app.game.grid_w.saturating_sub(vp.vis_w);
-            let max_y = app.game.grid_h.saturating_sub(vp.vis_h);
-            let vx = (vp.view_x as i16 + shake.x).clamp(0, max_x as i16) as u16;
-            let vy = (vp.view_y as i16 + shake.y).clamp(0, max_y as i16) as u16;
-            vp.view_x = vx;
-            vp.view_y = vy;
-        }
+        let vp = app.ui.viewport;
 
         if area.width == 0 || area.height == 0 || vp.vis_w == 0 || vp.vis_h == 0 {
             return;

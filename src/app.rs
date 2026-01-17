@@ -677,6 +677,7 @@ impl App {
         let sp = self.game.speed.max(1) as u16;
         let mut impacts: Vec<(u16, u16, TowerKind, u8, Option<usize>)> = Vec::new();
         let mut on_hits: Vec<(TowerKind, u16, u16, i32, u8, Option<usize>)> = Vec::new();
+        let mut status_overlays: Vec<(usize, u8)> = Vec::new();
 
         for p in &mut self.game.projectiles {
             if p.ttl > 0 {
@@ -726,11 +727,7 @@ impl App {
                         let (slow_percent, slow_ticks) = Self::frost_slow(p.source_level);
                         e.slow_percent = e.slow_percent.max(slow_percent);
                         e.slow_ticks = e.slow_ticks.max(slow_ticks);
-                        self.game.fx.spawn_status_overlay(
-                            ei,
-                            slow_ticks.min(u8::MAX as u16) as u8,
-                            self.rand_u32(),
-                        );
+                        status_overlays.push((ei, slow_ticks.min(u8::MAX as u16) as u8));
                     }
                 }
                 on_hits.push((p.kind, hit_x, hit_y, p.damage, p.source_level, p.fx_id));
@@ -741,6 +738,11 @@ impl App {
         }
 
         self.game.projectiles.retain(|p| p.ttl > 0);
+
+        for (target, ttl) in status_overlays {
+            let seed = self.rand_u32();
+            self.game.fx.spawn_status_overlay(target, ttl, seed);
+        }
 
         for (kind, hit_x, hit_y, damage, level, _fx_id) in on_hits {
             if kind == TowerKind::Tesla {
@@ -894,12 +896,13 @@ impl App {
         let to = Vec2i::new(to_x as i16, to_y as i16);
         let dir = Vec2i::new((to.x - from.x).signum(), (to.y - from.y).signum());
 
+        let seed = self.rand_u32();
         let fx_id = self.game.fx.spawn_projectile(
             kind,
             from,
             to,
             ttl.min(u8::MAX as u16) as u8,
-            self.rand_u32(),
+            seed,
         );
 
         self.game.projectiles.push(Projectile {
@@ -915,9 +918,11 @@ impl App {
             fx_id,
         });
 
-        self.game.fx.spawn_muzzle(kind, from, dir, self.rand_u32());
+        let muzzle_seed = self.rand_u32();
+        self.game.fx.spawn_muzzle(kind, from, dir, muzzle_seed);
         if kind == TowerKind::Sniper {
-            self.game.fx.spawn_tracer_line(from, to, self.rand_u32());
+            let tracer_seed = self.rand_u32();
+            self.game.fx.spawn_tracer_line(from, to, tracer_seed);
         }
     }
 
@@ -928,9 +933,6 @@ impl App {
             TowerKind::Cannon => {
                 self.game.fx.spawn_impact_ring(pos, seed);
                 self.game.fx.spawn_dust(pos, seed ^ 0xA53C);
-                self.game
-                    .fx
-                    .spawn_camera_impulse(self.rand_i8(-1, 1) as i16, 0);
             }
             TowerKind::Tesla => {
                 self.game.fx.spawn_target_flash(pos, seed);
@@ -973,14 +975,16 @@ impl App {
                     e.hp = 0;
                 }
             }
+            let arc_seed = self.rand_u32();
+            let flash_seed = self.rand_u32();
             self.game.fx.spawn_arc_lightning(
                 Vec2i::new(x as i16, y as i16),
                 Vec2i::new(ex as i16, ey as i16),
-                self.rand_u32(),
+                arc_seed,
             );
             self.game
                 .fx
-                .spawn_target_flash(Vec2i::new(ex as i16, ey as i16), self.rand_u32());
+                .spawn_target_flash(Vec2i::new(ex as i16, ey as i16), flash_seed);
         }
     }
 
@@ -1009,7 +1013,8 @@ impl App {
 
         for (fx_x, fx_y) in fx_spawns {
             let pos = Vec2i::new(fx_x, fx_y);
-            self.game.fx.spawn_dust(pos, self.rand_u32());
+            let seed = self.rand_u32();
+            self.game.fx.spawn_dust(pos, seed);
         }
     }
 
@@ -1032,11 +1037,13 @@ impl App {
 
         for (idx, fx_x, fx_y) in fx_spawns {
             let pos = Vec2i::new(fx_x, fx_y);
-            self.game.fx.spawn_shatter(pos, self.rand_u32());
+            let shatter_seed = self.rand_u32();
+            let overlay_seed = self.rand_u32();
+            self.game.fx.spawn_shatter(pos, shatter_seed);
             self.game.fx.spawn_status_overlay(
                 idx,
                 slow_ticks.min(u8::MAX as u16) as u8,
-                self.rand_u32(),
+                overlay_seed,
             );
         }
     }
@@ -1049,15 +1056,6 @@ impl App {
         x ^= x >> 27;
         self.rng = x;
         ((x.wrapping_mul(0x2545F4914F6CDD1D_u64)) >> 32) as u32
-    }
-
-    fn rand_i8(&mut self, lo: i8, hi: i8) -> i8 {
-        if lo >= hi {
-            return lo;
-        }
-        let span = (hi as i16 - lo as i16 + 1) as u16;
-        let v = (self.rand_u32() % span as u32) as i16;
-        (lo as i16 + v) as i8
     }
 
     fn acquire_target(
