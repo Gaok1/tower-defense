@@ -9,6 +9,8 @@ pub struct GameSnapshot {
     pub money: i32,
     pub lives: i32,
     pub wave: i32,
+    pub pending_wave_start: bool,
+    pub prep_ticks: u32,
     pub towers: Vec<Tower>,
     pub enemies: Vec<Enemy>,
 }
@@ -18,6 +20,7 @@ pub struct GameSnapshot {
 pub enum NetCmd {
     TogglePause,
     CycleSpeed,
+    StartWave,
     Build { x: u16, y: u16, kind: TowerKind },
     Upgrade { x: u16, y: u16 },
     Sell { x: u16, y: u16 },
