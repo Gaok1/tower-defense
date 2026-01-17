@@ -1386,7 +1386,7 @@ impl App {
                 let Some(idx) = self.tower_index_at(x, y) else {
                     return Err("sem torre para upgrade".to_string());
                 };
-                let cost = Self::tower_upgrade_cost(self.game.towers[idx].kind);
+                let cost = Self::tower_upgrade_cost(self.game.towers[idx].kind, self.game.wave);
                 if !self.dev_mode && self.game.money < cost {
                     return Err("dinheiro insuficiente".to_string());
                 }
@@ -2167,7 +2167,7 @@ impl App {
                 }
             }
 
-            let reward = Self::enemy_reward_value(cost);
+            let reward = Self::enemy_reward_value(cost, wave);
             // pequena defasagem no spawn pelo move_cd inicial
             let stagger = (spawned as u16 * 6).min(60);
             self.game.enemies.push(Enemy {
@@ -2317,8 +2317,11 @@ impl App {
         hp_cost + speed_cost + kind_cost
     }
 
-    fn enemy_reward_value(cost: i32) -> i32 {
-        (cost * 2).clamp(2, 30)
+    fn enemy_reward_value(cost: i32, wave: i32) -> i32 {
+        let wave = wave.max(1);
+        let base = cost.clamp(2, 14);
+        let wave_bonus = (wave / 4).min(6);
+        (base + wave_bonus).clamp(2, 20)
     }
 
     fn pick_enemy_kind(&mut self, wave: i32) -> EnemyKind {
@@ -3064,7 +3067,7 @@ impl App {
         if self.tower_index_at(x, y).is_some() {
             return false;
         }
-        self.dev_mode || self.game.money >= Self::tower_cost(kind)
+        self.dev_mode || self.game.money >= Self::tower_cost(kind, self.game.wave)
     }
 
     pub fn build_at(&mut self, x: u16, y: u16, kind: TowerKind) -> bool {
@@ -3072,7 +3075,7 @@ impl App {
             return false;
         }
         if !self.dev_mode {
-            let cost = Self::tower_cost(kind);
+            let cost = Self::tower_cost(kind, self.game.wave);
             self.game.money -= cost;
         }
         self.game.towers.push(Tower {
@@ -3098,7 +3101,7 @@ impl App {
             return;
         }
 
-        let cost = Self::tower_upgrade_cost(self.game.towers[idx].kind);
+        let cost = Self::tower_upgrade_cost(self.game.towers[idx].kind, self.game.wave);
         if !self.dev_mode && self.game.money < cost {
             return;
         }
@@ -3279,26 +3282,32 @@ impl App {
         }
     }
 
-    pub fn tower_cost(kind: TowerKind) -> i32 {
-        match kind {
-            TowerKind::Basic => 50,
-            TowerKind::Sniper => 80,
-            TowerKind::Rapid => 45,
-            TowerKind::Cannon => 95,
-            TowerKind::Tesla => 70,
-            TowerKind::Frost => 60,
-        }
+    pub fn tower_cost(kind: TowerKind, wave: i32) -> i32 {
+        let base = match kind {
+            TowerKind::Basic => 60,
+            TowerKind::Sniper => 95,
+            TowerKind::Rapid => 55,
+            TowerKind::Cannon => 110,
+            TowerKind::Tesla => 85,
+            TowerKind::Frost => 75,
+        };
+        let wave = wave.max(1);
+        let wave_bonus = (base * (wave - 1)) / 20;
+        base + wave_bonus
     }
 
-    pub fn tower_upgrade_cost(kind: TowerKind) -> i32 {
-        match kind {
-            TowerKind::Basic => 30,
-            TowerKind::Sniper => 40,
-            TowerKind::Rapid => 25,
-            TowerKind::Cannon => 45,
-            TowerKind::Tesla => 35,
-            TowerKind::Frost => 30,
-        }
+    pub fn tower_upgrade_cost(kind: TowerKind, wave: i32) -> i32 {
+        let base = match kind {
+            TowerKind::Basic => 40,
+            TowerKind::Sniper => 55,
+            TowerKind::Rapid => 35,
+            TowerKind::Cannon => 60,
+            TowerKind::Tesla => 45,
+            TowerKind::Frost => 40,
+        };
+        let wave = wave.max(1);
+        let wave_bonus = (base * (wave - 1)) / 24;
+        base + wave_bonus
     }
 
     pub fn build_preview_stats(&self) -> Option<Stats> {
