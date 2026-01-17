@@ -37,6 +37,8 @@ pub struct SaveTower {
     pub y: u16,
     pub kind: TowerKindSave,
     pub level: u8,
+    #[serde(default)]
+    pub target_mode: Option<TargetModeSave>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -47,6 +49,18 @@ pub enum TowerKindSave {
     Cannon,
     Tesla,
     Frost,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TargetModeSave {
+    Primeiro,
+    Ultimo,
+    MaisForte,
+    MaisFraco,
+    MaisRapido,
+    MaisLento,
+    MaisPerigoso,
+    MaisCurador,
 }
 
 #[derive(Debug, Clone)]

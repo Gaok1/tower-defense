@@ -7,7 +7,7 @@
 //
 // Objetivo: sprites mais ricos (4x4+), com leitura rápida no combate.
 
-use crate::app::TowerKind;
+use crate::app::{EnemyKind, TowerKind};
 
 #[derive(Clone, Copy)]
 pub struct Sprite {
@@ -446,6 +446,21 @@ pub const ENEMY_Z1: Sprite = Sprite {
     h: 4,
     rows: &[" ██ ", "█X█", " ██ ", " ▀▀ "],
 };
+pub const ENEMY_HEALER_Z1: Sprite = Sprite {
+    w: 4,
+    h: 4,
+    rows: &[" ██ ", "█✚█", " ██ ", " ▀▀ "],
+};
+pub const ENEMY_SHIELDED_Z1: Sprite = Sprite {
+    w: 4,
+    h: 4,
+    rows: &[" ██ ", "█▣█", " ██ ", " ▀▀ "],
+};
+pub const ENEMY_SNEAK_Z1: Sprite = Sprite {
+    w: 4,
+    h: 4,
+    rows: &[" ██ ", "█░█", " ██ ", " ▀▀ "],
+};
 pub const ENEMY_Z2: Sprite = Sprite {
     w: 8,
     h: 8,
@@ -650,10 +665,15 @@ pub fn tower_sprite(kind: TowerKind, zoom: u16) -> Sprite {
     }
 }
 
-pub fn enemy_sprite(zoom: u16) -> Sprite {
+pub fn enemy_sprite(kind: EnemyKind, zoom: u16) -> Sprite {
     match zoom.clamp(0, 4) {
         0 => ENEMY_Z0,
-        1 => ENEMY_Z1,
+        1 => match kind {
+            EnemyKind::Healer => ENEMY_HEALER_Z1,
+            EnemyKind::Shielded => ENEMY_SHIELDED_Z1,
+            EnemyKind::Sneak => ENEMY_SNEAK_Z1,
+            _ => ENEMY_Z1,
+        },
         2 => ENEMY_Z2,
         3 => ENEMY_Z3,
         4 => ENEMY_Z4,

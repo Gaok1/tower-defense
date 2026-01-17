@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::app::{Enemy, Tower, TowerKind};
+use crate::app::{Enemy, TargetMode, Tower, TowerKind};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameSnapshot {
@@ -24,6 +24,7 @@ pub enum NetCmd {
     Build { x: u16, y: u16, kind: TowerKind },
     Upgrade { x: u16, y: u16 },
     Sell { x: u16, y: u16 },
+    SetTargetMode { x: u16, y: u16, mode: TargetMode },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

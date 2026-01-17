@@ -84,6 +84,7 @@ pub fn pump(app: &mut App) -> Result<()> {
                     KeyCode::Char('u') => app.handle_button(ButtonId::Upgrade),
                     KeyCode::Char('s') => app.handle_button(ButtonId::Sell),
                     KeyCode::Char('f') => app.handle_button(ButtonId::Speed),
+                    KeyCode::Char('t') => app.cycle_selected_target_mode(),
                     KeyCode::F(12) => app.toggle_dev_mode(),
                     KeyCode::Char('1') => app.toggle_build_kind(TowerKind::Basic),
                     KeyCode::Char('2') => app.toggle_build_kind(TowerKind::Sniper),
