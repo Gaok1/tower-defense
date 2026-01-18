@@ -577,7 +577,7 @@ impl FxManager {
                         used += draw_screen_line(
                             a,
                             b,
-                            Color::LightCyan,
+                            tower_kind_color(TowerKind::Sniper),
                             Modifier::BOLD,
                             buf,
                             area,
@@ -589,7 +589,7 @@ impl FxManager {
                             a.0,
                             a.1,
                             glyph,
-                            Color::LightCyan,
+                            tower_kind_color(TowerKind::Sniper),
                             Modifier::BOLD,
                             buf,
                             area,
@@ -943,7 +943,7 @@ fn projectile_glyphs(kind: TowerKind) -> (&'static str, &'static str) {
 fn tower_kind_color(kind: TowerKind) -> Color {
     match kind {
         TowerKind::Basic => Color::LightYellow,
-        TowerKind::Sniper => Color::LightCyan,
+        TowerKind::Sniper => Color::Yellow,
         TowerKind::Rapid => Color::Yellow,
         TowerKind::Cannon => Color::LightRed,
         TowerKind::Tesla => Color::LightBlue,
