@@ -634,6 +634,40 @@ impl FxManager {
                         viewport,
                         budget,
                     );
+                    if *budget <= 0 {
+                        return used;
+                    }
+                    if kind == TowerKind::Rapid {
+                        let trail_pos2 =
+                            Vec2i::new(entity.pos.x - dir.x * 2, entity.pos.y - dir.y * 2);
+                        used += draw_cell(
+                            trail_pos2,
+                            glyph_trail,
+                            tower_kind_color(kind),
+                            Modifier::DIM,
+                            buf,
+                            area,
+                            viewport,
+                            budget,
+                        );
+                    }
+                    if *budget <= 0 {
+                        return used;
+                    }
+                    if kind == TowerKind::Cannon {
+                        let side = Vec2i::new(-dir.y, dir.x);
+                        let accent_pos = Vec2i::new(entity.pos.x + side.x, entity.pos.y + side.y);
+                        used += draw_cell(
+                            accent_pos,
+                            "▓",
+                            tower_kind_color(kind),
+                            Modifier::DIM,
+                            buf,
+                            area,
+                            viewport,
+                            budget,
+                        );
+                    }
                 }
             }
             FxKind::ImpactCross => {
@@ -906,7 +940,7 @@ fn muzzle_profile(kind: TowerKind) -> MuzzleProfile {
     match kind {
         TowerKind::Sniper => MuzzleProfile::new("▓", None, 1),
         TowerKind::Rapid => MuzzleProfile::new("▓", None, 1),
-        TowerKind::Cannon => MuzzleProfile::new("█", Some("▓"), 2),
+        TowerKind::Cannon => MuzzleProfile::new("█", Some("▓"), 3),
         TowerKind::Tesla => MuzzleProfile::new("╳", None, 1),
         TowerKind::Frost => MuzzleProfile::new("▒", None, 1),
         TowerKind::Basic => MuzzleProfile::new("▓", None, 1),
@@ -932,11 +966,11 @@ impl MuzzleProfile {
 fn projectile_glyphs(kind: TowerKind) -> (&'static str, &'static str) {
     match kind {
         TowerKind::Sniper => ("█", "▒"),
-        TowerKind::Rapid => ("▒", "░"),
-        TowerKind::Cannon => ("█", "▒"),
+        TowerKind::Rapid => ("░", "·"),
+        TowerKind::Cannon => ("█", "▓"),
         TowerKind::Tesla => ("▓", "▒"),
         TowerKind::Frost => ("▒", "░"),
-        TowerKind::Basic => ("▓", "▒"),
+        TowerKind::Basic => ("▒", "░"),
     }
 }
 
