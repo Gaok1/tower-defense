@@ -41,6 +41,13 @@ pub enum FxEvent {
         muzzle_seed: u32,
         tracer_seed: Option<u32>,
     },
+    TracerLine {
+        from_x: u16,
+        from_y: u16,
+        to_x: u16,
+        to_y: u16,
+        seed: u32,
+    },
     Impact {
         kind: TowerKind,
         x: u16,
