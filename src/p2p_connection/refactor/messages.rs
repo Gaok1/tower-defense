@@ -5,9 +5,9 @@ use base64::Engine;
 use bincode::Options;
 use quinn::RecvStream;
 
-use super::runtime::CHUNK_SIZE;
 use super::commands::{NetCommand, NetEvent};
-use super::transfer::{send_files, SendResult};
+use super::runtime::CHUNK_SIZE;
+use super::transfer::{SendResult, send_files};
 
 fn bincode_options() -> impl Options {
     bincode::DefaultOptions::new().with_fixint_encoding()

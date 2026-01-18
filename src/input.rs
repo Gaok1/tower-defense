@@ -27,6 +27,8 @@ pub fn pump(app: &mut App) -> Result<()> {
                 },
                 Screen::Multiplayer => match k.code {
                     KeyCode::Esc => app.enter_main_menu(),
+                    KeyCode::Tab => app.multiplayer_focus_next(),
+                    KeyCode::BackTab => app.multiplayer_focus_prev(),
                     KeyCode::Backspace => {
                         if matches!(
                             app.multiplayer.focus,
@@ -35,14 +37,16 @@ pub fn pump(app: &mut App) -> Result<()> {
                             app.multiplayer_backspace();
                         }
                     }
-                    KeyCode::Enter => {
-                        if matches!(
-                            app.multiplayer.focus,
-                            MultiplayerFocus::PeerIp | MultiplayerFocus::Name
-                        ) {
-                            app.multiplayer.focus = MultiplayerFocus::Continue;
+                    KeyCode::Enter => match app.multiplayer.focus {
+                        MultiplayerFocus::Role => app.multiplayer_toggle_role(),
+                        MultiplayerFocus::IpMode => app.multiplayer_toggle_ip_mode(),
+                        MultiplayerFocus::PublicIp => app.multiplayer_copy_public_ip(),
+                        MultiplayerFocus::PeerIp => app.multiplayer_connect(),
+                        MultiplayerFocus::Connect => app.multiplayer_connect(),
+                        MultiplayerFocus::Name | MultiplayerFocus::Continue => {
+                            app.multiplayer_continue()
                         }
-                    }
+                    },
                     KeyCode::Char(c) => {
                         if matches!(
                             app.multiplayer.focus,
@@ -224,8 +228,7 @@ pub fn pump(app: &mut App) -> Result<()> {
                                 app.multiplayer_kick_player(index)
                             }
                         }
-                    }
-                    else {
+                    } else {
                         app.multiplayer.focus = MultiplayerFocus::Continue;
                     }
                 }

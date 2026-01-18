@@ -72,6 +72,7 @@ pub enum FxData {
         dir: Vec2i,
     },
     TracerLine {
+        kind: TowerKind,
         from: Vec2i,
         to: Vec2i,
     },
@@ -259,7 +260,7 @@ impl FxManager {
         self.spawn_entity(entity, true);
     }
 
-    pub fn spawn_tracer_line(&mut self, from: Vec2i, to: Vec2i, seed: u32) {
+    pub fn spawn_tracer_line(&mut self, kind: TowerKind, from: Vec2i, to: Vec2i, seed: u32) {
         let entity = FxEntity {
             kind: FxKind::TracerLine,
             pos: from,
@@ -267,7 +268,7 @@ impl FxManager {
             age: 0,
             priority: 60,
             seed,
-            data: FxData::TracerLine { from, to },
+            data: FxData::TracerLine { kind, from, to },
         };
         self.spawn_entity(entity, false);
     }
@@ -547,19 +548,34 @@ impl FxManager {
                 );
             }
             FxKind::TracerLine => {
-                let FxData::TracerLine { from, to } = entity.data else {
+                let FxData::TracerLine { kind, from, to } = entity.data else {
                     return 0;
                 };
-                let mut points = line_points(from, to);
-                let max_len = match lod {
-                    FxLod::Low => 8,
-                    FxLod::Medium => 16,
-                    FxLod::High => 32,
-                };
-                if points.len() > max_len {
-                    points.truncate(max_len);
+                let color = tower_kind_color(kind);
+                let glyph = line_glyph(from, to);
+
+                if let (Some(a), Some(b)) = (
+                    map_to_screen(from, area, viewport),
+                    map_to_screen(to, area, viewport),
+                ) {
+                    if a != b {
+                        used += draw_screen_line(a, b, color, Modifier::BOLD, buf, area, budget);
+                    } else {
+                        used += draw_screen_cell(
+                            a.0,
+                            a.1,
+                            glyph,
+                            color,
+                            Modifier::BOLD,
+                            buf,
+                            area,
+                            budget,
+                        );
+                    }
+                    return used;
                 }
 
+                let points = line_points(from, to);
                 let mut first: Option<(u16, u16)> = None;
                 let mut last: Option<(u16, u16)> = None;
                 for p in points {
@@ -571,25 +587,16 @@ impl FxManager {
                     }
                 }
 
-                let glyph = line_glyph(from, to);
                 match (first, last) {
                     (Some(a), Some(b)) if a != b => {
-                        used += draw_screen_line(
-                            a,
-                            b,
-                            tower_kind_color(TowerKind::Sniper),
-                            Modifier::BOLD,
-                            buf,
-                            area,
-                            budget,
-                        );
+                        used += draw_screen_line(a, b, color, Modifier::BOLD, buf, area, budget);
                     }
                     (Some(a), _) => {
                         used += draw_screen_cell(
                             a.0,
                             a.1,
                             glyph,
-                            tower_kind_color(TowerKind::Sniper),
+                            color,
                             Modifier::BOLD,
                             buf,
                             area,

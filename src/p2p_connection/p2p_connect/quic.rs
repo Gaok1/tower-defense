@@ -24,7 +24,9 @@ impl std::fmt::Display for ConnectError {
             ConnectError::Start { peer, error } => {
                 write!(f, "erro ao iniciar conexao {peer}: {error}")
             }
-            ConnectError::Handshake { peer, error } => write!(f, "erro ao conectar {peer}: {error}"),
+            ConnectError::Handshake { peer, error } => {
+                write!(f, "erro ao conectar {peer}: {error}")
+            }
             ConnectError::Timeout { peer, timeout } => write!(
                 f,
                 "tempo esgotado ao conectar {peer} ({}s)",
@@ -71,11 +73,10 @@ pub fn make_endpoint(
         }
         Some(log) => {
             let mut trace_lines: Vec<String> = Vec::new();
-            let result = stun::detect_public_endpoint_on_socket_with_trace(
-                &socket,
-                local_addr,
-                |line| trace_lines.push(line),
-            );
+            let result =
+                stun::detect_public_endpoint_on_socket_with_trace(&socket, local_addr, |line| {
+                    trace_lines.push(line)
+                });
             if result.is_err() {
                 for line in trace_lines {
                     log(line);
@@ -226,12 +227,13 @@ pub async fn connect_peer(
     peer: SocketAddr,
     timeout: Duration,
 ) -> Result<quinn::Connection, ConnectError> {
-    let connecting = endpoint
-        .connect(peer, DEFAULT_SERVER_NAME)
-        .map_err(|err| ConnectError::Start {
-            peer,
-            error: err.to_string(),
-        })?;
+    let connecting =
+        endpoint
+            .connect(peer, DEFAULT_SERVER_NAME)
+            .map_err(|err| ConnectError::Start {
+                peer,
+                error: err.to_string(),
+            })?;
 
     match tokio::time::timeout(timeout, connecting).await {
         Ok(Ok(connection)) => Ok(connection),

@@ -154,9 +154,9 @@ impl MultiplayerState {
         if let Some(net) = self.network.as_mut() {
             net.cmd_tx
                 .send(cmd)
-                .map_err(|_| "conexao multiplayer encerrada".to_string())
+                .map_err(|_| "conexao encerrada".to_string())
         } else {
-            Err("rede multiplayer inativa".to_string())
+            Err("multiplayer indisponivel".to_string())
         }
     }
 
@@ -914,17 +914,18 @@ impl App {
         self.multiplayer.last_info = None;
 
         let Some(endpoint) = self.multiplayer.local_endpoint.as_ref() else {
-            self.multiplayer.last_error = Some("IP publico ainda nao detectado".to_string());
+            self.multiplayer.last_error = Some("Codigo ainda nao esta disponivel".to_string());
             return;
         };
 
         let endpoint_text = endpoint.to_string();
         match copy_to_clipboard(&endpoint_text) {
             Ok(()) => {
-                self.multiplayer.last_info = Some("IP copiado para o clipboard".to_string());
+                self.multiplayer.last_info =
+                    Some("Codigo copiado para a area de transferencia".to_string());
             }
             Err(e) => {
-                self.multiplayer.last_error = Some(format!("falha ao copiar IP: {e}"));
+                self.multiplayer.last_error = Some(format!("falha ao copiar codigo: {e}"));
             }
         }
     }
@@ -936,19 +937,13 @@ impl App {
 
         if self.multiplayer.peer_ip.trim().is_empty() {
             self.multiplayer.status = ConnectionStatus::Failed;
-            self.multiplayer.last_error = Some(match self.multiplayer.role {
-                MultiplayerRole::Host => "IP do player vazio".to_string(),
-                MultiplayerRole::Peer => "IP do host vazio".to_string(),
-            });
+            self.multiplayer.last_error = Some("Cole o codigo do outro jogador".to_string());
             return;
         }
 
         let Some(addr) = self.parse_peer_addr() else {
             self.multiplayer.status = ConnectionStatus::Failed;
-            self.multiplayer.last_error = Some(match self.multiplayer.role {
-                MultiplayerRole::Host => "IP do player invalido".to_string(),
-                MultiplayerRole::Peer => "IP do host invalido".to_string(),
-            });
+            self.multiplayer.last_error = Some("Codigo invalido. Ex: 127.0.0.1:5000".to_string());
             return;
         };
 
@@ -967,33 +962,45 @@ impl App {
 
         self.multiplayer.status = ConnectionStatus::Connecting;
         self.multiplayer.last_info = Some(match self.multiplayer.role {
-            MultiplayerRole::Host => format!("conectando player em {addr}"),
-            MultiplayerRole::Peer => format!("juntando-se ao host {addr}"),
+            MultiplayerRole::Host => {
+                if self.dev_mode {
+                    format!("conectando em {addr}")
+                } else {
+                    "conectando...".to_string()
+                }
+            }
+            MultiplayerRole::Peer => {
+                if self.dev_mode {
+                    format!("conectando em {addr}")
+                } else {
+                    "conectando...".to_string()
+                }
+            }
         });
     }
 
     pub fn multiplayer_kick_player(&mut self, index: usize) {
         if self.multiplayer.role != MultiplayerRole::Host {
-            self.multiplayer.last_error = Some("apenas o host pode expulsar".to_string());
+            self.multiplayer.last_error = Some("apenas o host pode remover jogadores".to_string());
             return;
         }
         if self.multiplayer.status != ConnectionStatus::Connected {
-            self.multiplayer.last_error = Some("nenhum jogador conectado".to_string());
+            self.multiplayer.last_error = Some("nenhum jogador conectado ainda".to_string());
             return;
         }
         if index == 0 {
-            self.multiplayer.last_error = Some("nao e possivel expulsar voce mesmo".to_string());
+            self.multiplayer.last_error = Some("voce nao pode remover voce mesmo".to_string());
             return;
         }
         let msg = NetMsg::Kick {
-            reason: Some("expulso pelo host".to_string()),
+            reason: Some("removido pelo host".to_string()),
         };
         if let Err(err) = self.multiplayer.queue_game_msg(&msg) {
             self.multiplayer.status = ConnectionStatus::Failed;
             self.multiplayer.last_error = Some(err);
             return;
         }
-        self.multiplayer.last_info = Some("jogador expulso do lobby".to_string());
+        self.multiplayer.last_info = Some("jogador removido".to_string());
     }
 
     pub fn multiplayer_continue(&mut self) {
@@ -1001,7 +1008,7 @@ impl App {
             return;
         }
         if self.multiplayer.name_input.trim().is_empty() {
-            self.multiplayer.last_error = Some("defina o nome do player".to_string());
+            self.multiplayer.last_error = Some("digite seu nome para continuar".to_string());
             self.multiplayer.last_info = None;
             return;
         }
@@ -1028,7 +1035,7 @@ impl App {
             }
             self.screen = Screen::MapSelect;
         } else {
-            self.multiplayer.last_info = Some("nome enviado. aguardando host...".to_string());
+            self.multiplayer.last_info = Some("nome enviado. aguardando o host...".to_string());
         }
     }
 
@@ -1098,7 +1105,11 @@ impl App {
                     Err(mpsc::TryRecvError::Empty) => break,
                     Err(mpsc::TryRecvError::Disconnected) => {
                         self.multiplayer.status = ConnectionStatus::Failed;
-                        self.multiplayer.last_error = Some("canal de rede encerrado".to_string());
+                        self.multiplayer.last_error = Some(if self.dev_mode {
+                            "canal de rede encerrado".to_string()
+                        } else {
+                            "conexao encerrada.".to_string()
+                        });
                         self.multiplayer.network = None;
                         return;
                     }
@@ -1112,23 +1123,37 @@ impl App {
     fn handle_net_event(&mut self, event: NetEvent) {
         match event {
             NetEvent::Bound(addr) => {
-                self.multiplayer.last_info = Some(format!("ouvindo {addr}"));
+                if self.dev_mode {
+                    self.multiplayer.last_info = Some(format!("ouvindo {addr}"));
+                }
             }
             NetEvent::PublicEndpoint(addr) => {
                 self.multiplayer.local_endpoint = Some(addr);
                 if self.multiplayer.status == ConnectionStatus::FetchingIp {
                     self.multiplayer.status = ConnectionStatus::Ready;
-                    self.multiplayer.last_info = Some(format!("IP publico {addr}"));
+                    self.multiplayer.last_info = Some(if self.dev_mode {
+                        format!("codigo pronto: {addr}")
+                    } else {
+                        "Codigo pronto. Copie e envie para o amigo.".to_string()
+                    });
                 }
             }
             NetEvent::PeerConnecting(peer) => {
-                self.multiplayer.last_info = Some(format!("conectando em {peer}"));
+                self.multiplayer.last_info = Some(if self.dev_mode {
+                    format!("conectando em {peer}")
+                } else {
+                    "conectando...".to_string()
+                });
             }
             NetEvent::PeerConnected(peer) => {
                 self.multiplayer.status = ConnectionStatus::Connected;
                 self.multiplayer.active = true;
                 self.multiplayer.last_error = None;
-                self.multiplayer.last_info = Some(format!("peer conectado: {peer}"));
+                self.multiplayer.last_info = Some(if self.dev_mode {
+                    format!("peer conectado: {peer}")
+                } else {
+                    "conectado!".to_string()
+                });
                 self.ensure_cursor_slots();
 
                 if self.multiplayer.role == MultiplayerRole::Host {
@@ -1151,27 +1176,31 @@ impl App {
                 }
             }
             NetEvent::PeerDisconnected(peer) => {
-                let disconnected_name = self
-                    .multiplayer
-                    .peer_name
-                    .clone()
-                    .unwrap_or_else(|| {
-                        if self.multiplayer.role == MultiplayerRole::Peer {
-                            "Host".to_string()
-                        } else {
-                            "Player".to_string()
-                        }
-                    });
+                let disconnected_name = self.multiplayer.peer_name.clone().unwrap_or_else(|| {
+                    if self.multiplayer.role == MultiplayerRole::Peer {
+                        "Host".to_string()
+                    } else {
+                        "Player".to_string()
+                    }
+                });
                 self.multiplayer.active = false;
                 self.multiplayer.peer_name = None;
                 self.multiplayer.cursors.clear();
                 if self.multiplayer.role == MultiplayerRole::Host {
                     self.multiplayer.status = ConnectionStatus::Ready;
-                    self.multiplayer.last_info = Some(format!("jogador saiu: {peer}"));
+                    self.multiplayer.last_info = Some(if self.dev_mode {
+                        format!("jogador saiu: {peer}")
+                    } else {
+                        "jogador saiu da sala.".to_string()
+                    });
                     self.multiplayer.last_error = None;
                 } else {
                     self.multiplayer.status = ConnectionStatus::Failed;
-                    self.multiplayer.last_error = Some(format!("peer desconectado: {peer}"));
+                    self.multiplayer.last_error = Some(if self.dev_mode {
+                        format!("peer desconectado: {peer}")
+                    } else {
+                        "conexao perdida.".to_string()
+                    });
                 }
 
                 self.show_top_notice(format!("{disconnected_name} foi desconectado."));
@@ -1185,27 +1214,31 @@ impl App {
                 }
             }
             NetEvent::PeerTimeout(peer) => {
-                let disconnected_name = self
-                    .multiplayer
-                    .peer_name
-                    .clone()
-                    .unwrap_or_else(|| {
-                        if self.multiplayer.role == MultiplayerRole::Peer {
-                            "Host".to_string()
-                        } else {
-                            "Player".to_string()
-                        }
-                    });
+                let disconnected_name = self.multiplayer.peer_name.clone().unwrap_or_else(|| {
+                    if self.multiplayer.role == MultiplayerRole::Peer {
+                        "Host".to_string()
+                    } else {
+                        "Player".to_string()
+                    }
+                });
                 self.multiplayer.active = false;
                 self.multiplayer.peer_name = None;
                 self.multiplayer.cursors.clear();
                 if self.multiplayer.role == MultiplayerRole::Host {
                     self.multiplayer.status = ConnectionStatus::Ready;
-                    self.multiplayer.last_info = Some(format!("tempo esgotado {peer}"));
+                    self.multiplayer.last_info = Some(if self.dev_mode {
+                        format!("tempo esgotado {peer}")
+                    } else {
+                        "tempo esgotado.".to_string()
+                    });
                     self.multiplayer.last_error = None;
                 } else {
                     self.multiplayer.status = ConnectionStatus::Failed;
-                    self.multiplayer.last_error = Some(format!("tempo esgotado {peer}"));
+                    self.multiplayer.last_error = Some(if self.dev_mode {
+                        format!("tempo esgotado {peer}")
+                    } else {
+                        "tempo esgotado.".to_string()
+                    });
                 }
 
                 self.show_top_notice(format!("{disconnected_name} foi desconectado."));
@@ -1219,23 +1252,34 @@ impl App {
                 }
             }
             NetEvent::PublicEndpointObserved(addr) => {
-                self.multiplayer.last_info = Some(format!("endpoint observado {addr}"));
+                if self.dev_mode {
+                    self.multiplayer.last_info = Some(format!("endpoint observado {addr}"));
+                }
             }
             NetEvent::Log(msg) => {
                 if msg.to_lowercase().contains("erro") {
-                    self.multiplayer.last_error = Some(msg);
+                    self.multiplayer.last_error = Some(if self.dev_mode {
+                        msg
+                    } else {
+                        "falha na conexao.".to_string()
+                    });
                     if self.multiplayer.status == ConnectionStatus::FetchingIp {
                         self.multiplayer.status = ConnectionStatus::Failed;
                     }
                 } else {
-                    self.multiplayer.last_info = Some(msg);
+                    if self.dev_mode {
+                        self.multiplayer.last_info = Some(msg);
+                    }
                 }
             }
             NetEvent::GameMessage(msg) => match from_slice(&msg) {
                 Ok(net_msg) => self.handle_net_msg(net_msg),
                 Err(err) => {
-                    self.multiplayer.last_error =
-                        Some(format!("falha ao decodificar mensagem: {err}"));
+                    self.multiplayer.last_error = Some(if self.dev_mode {
+                        format!("falha ao decodificar mensagem: {err}")
+                    } else {
+                        "falha ao receber dados do multiplayer.".to_string()
+                    });
                 }
             },
             _ => {}
@@ -1274,7 +1318,9 @@ impl App {
                 if self.multiplayer.role != MultiplayerRole::Peer {
                     return;
                 }
-                if !self.multiplayer.active || self.multiplayer.status != ConnectionStatus::Connected {
+                if !self.multiplayer.active
+                    || self.multiplayer.status != ConnectionStatus::Connected
+                {
                     return;
                 }
                 if self.maps.is_empty() {
@@ -1495,7 +1541,7 @@ impl App {
                     let fx_id = self.game.fx.spawn_projectile(kind, from, to, ttl_fx, seed);
                     self.game.fx.spawn_muzzle(kind, from, dir, muzzle_seed);
                     if let Some(tracer_seed) = tracer_seed {
-                        self.game.fx.spawn_tracer_line(from, to, tracer_seed);
+                        self.game.fx.spawn_tracer_line(kind, from, to, tracer_seed);
                     }
 
                     if let Some(fx_id) = fx_id {
@@ -1514,6 +1560,7 @@ impl App {
                     }
                 }
                 FxEvent::TracerLine {
+                    kind,
                     from_x,
                     from_y,
                     to_x,
@@ -1521,6 +1568,7 @@ impl App {
                     seed,
                 } => {
                     self.game.fx.spawn_tracer_line(
+                        kind,
                         Vec2i::new(from_x as i16, from_y as i16),
                         Vec2i::new(to_x as i16, to_y as i16),
                         seed,
@@ -1563,10 +1611,14 @@ impl App {
                         .spawn_target_flash(Vec2i::new(x as i16, y as i16), seed);
                 }
                 FxEvent::Dust { x, y, seed } => {
-                    self.game.fx.spawn_dust(Vec2i::new(x as i16, y as i16), seed);
+                    self.game
+                        .fx
+                        .spawn_dust(Vec2i::new(x as i16, y as i16), seed);
                 }
                 FxEvent::Shatter { x, y, seed } => {
-                    self.game.fx.spawn_shatter(Vec2i::new(x as i16, y as i16), seed);
+                    self.game
+                        .fx
+                        .spawn_shatter(Vec2i::new(x as i16, y as i16), seed);
                 }
                 FxEvent::StatusOverlay { target, ttl, seed } => {
                     self.game.fx.spawn_status_overlay(target, ttl, seed);
@@ -1808,7 +1860,6 @@ impl App {
 
     pub fn on_tick_if_due(&mut self) {
         if self.last_tick.elapsed() >= self.tick_rate {
-            
             self.last_tick = Instant::now();
             self.tick_top_notice();
             self.poll_network_events();
@@ -2003,59 +2054,66 @@ impl App {
         let wave = self.game.wave;
         let mut spawns: Vec<(u16, u16, u16, u16, i32, TowerKind, u8)> = Vec::new();
 
-        for t in &mut self.game.towers {
-            let stats = Self::tower_stats(t);
-            if t.kind == TowerKind::Tesla {
-                if t.cooldown > sp {
-                    t.cooldown -= sp;
-                } else {
-                    t.cooldown = 0;
-                }
-                let Some((tx, ty)) = Self::acquire_target(
-                    t,
-                    self.game.enemies.as_slice(),
-                    self.game.path.as_slice(),
-                    stats.range,
-                    wave,
-                ) else {
-                    continue;
-                };
-                let tick_damage =
-                    (stats.attack * sp as i32 / stats.fire_cd as i32).max(1);
-                if let Some(ei) = Self::enemy_index_at(
-                    self.game.enemies.as_slice(),
-                    self.game.path.as_slice(),
-                    tx,
-                    ty,
-                ) {
-                    let e = &mut self.game.enemies[ei];
-                    e.hp -= tick_damage;
-                    if e.hp < 0 {
-                        e.hp = 0;
+        let towers_len = self.game.towers.len();
+        for ti in 0..towers_len {
+            let mut tesla_action: Option<(u16, u16, u16, u16, i32, u8)> = None;
+            {
+                let t = &mut self.game.towers[ti];
+                let stats = Self::tower_stats(t);
+                if t.kind == TowerKind::Tesla {
+                    if t.cooldown > sp {
+                        t.cooldown -= sp;
+                    } else {
+                        t.cooldown = 0;
                     }
+                    let Some((tx, ty)) = Self::acquire_target(
+                        t,
+                        self.game.enemies.as_slice(),
+                        self.game.path.as_slice(),
+                        stats.range,
+                        wave,
+                    ) else {
+                        continue;
+                    };
+                    let tick_damage = (stats.attack * sp as i32 / stats.fire_cd as i32).max(1);
+                    if let Some(ei) = Self::enemy_index_at(
+                        self.game.enemies.as_slice(),
+                        self.game.path.as_slice(),
+                        tx,
+                        ty,
+                    ) {
+                        let e = &mut self.game.enemies[ei];
+                        e.hp -= tick_damage;
+                        if e.hp < 0 {
+                            e.hp = 0;
+                        }
+                    }
+                    tesla_action = Some((t.x, t.y, tx, ty, tick_damage, t.level));
+                } else {
+                    if t.cooldown > sp {
+                        t.cooldown -= sp;
+                        continue;
+                    }
+                    t.cooldown = 0;
+
+                    let Some((tx, ty)) = Self::acquire_target(
+                        t,
+                        self.game.enemies.as_slice(),
+                        self.game.path.as_slice(),
+                        stats.range,
+                        wave,
+                    ) else {
+                        continue;
+                    };
+
+                    spawns.push((t.x, t.y, tx, ty, stats.attack, t.kind, t.level));
+                    t.cooldown = stats.fire_cd;
                 }
-                self.apply_tesla_chain(tx, ty, tick_damage, t.level);
-                self.spawn_tesla_beam(t.x, t.y, tx, ty);
-                continue;
             }
-            if t.cooldown > sp {
-                t.cooldown -= sp;
-                continue;
+            if let Some((from_x, from_y, tx, ty, tick_damage, level)) = tesla_action {
+                self.apply_tesla_chain(tx, ty, tick_damage, level);
+                self.spawn_tesla_beam(from_x, from_y, tx, ty);
             }
-            t.cooldown = 0;
-
-            let Some((tx, ty)) = Self::acquire_target(
-                t,
-                self.game.enemies.as_slice(),
-                self.game.path.as_slice(),
-                stats.range,
-                wave,
-            ) else {
-                continue;
-            };
-
-            spawns.push((t.x, t.y, tx, ty, stats.attack, t.kind, t.level));
-            t.cooldown = stats.fire_cd;
         }
 
         for (from_x, from_y, to_x, to_y, dmg, kind, level) in spawns {
@@ -2468,18 +2526,30 @@ impl App {
         }
     }
 
-    fn spawn_tesla_beam(&mut self, from_x: u16, from_y: u16, to_x: u16, to_y: u16) {
+    fn spawn_tracer_line_event(
+        &mut self,
+        kind: TowerKind,
+        from_x: u16,
+        from_y: u16,
+        to_x: u16,
+        to_y: u16,
+    ) {
         let from = Vec2i::new(from_x as i16, from_y as i16);
         let to = Vec2i::new(to_x as i16, to_y as i16);
         let seed = self.rand_u32();
-        self.game.fx.spawn_tracer_line(from, to, seed);
+        self.game.fx.spawn_tracer_line(kind, from, to, seed);
         self.queue_fx_event(FxEvent::TracerLine {
+            kind,
             from_x,
             from_y,
             to_x,
             to_y,
             seed,
         });
+    }
+
+    fn spawn_tesla_beam(&mut self, from_x: u16, from_y: u16, to_x: u16, to_y: u16) {
+        self.spawn_tracer_line_event(TowerKind::Tesla, from_x, from_y, to_x, to_y);
     }
 
     fn spawn_projectile(
@@ -2490,10 +2560,27 @@ impl App {
         to_y: u16,
         dmg: i32,
         kind: TowerKind,
-        _level: u8,
+        level: u8,
     ) {
         if kind == TowerKind::Tesla {
             self.spawn_tesla_beam(from_x, from_y, to_x, to_y);
+            return;
+        }
+        if kind == TowerKind::Sniper {
+            self.spawn_tracer_line_event(kind, from_x, from_y, to_x, to_y);
+            if let Some(ei) = Self::enemy_index_at(
+                self.game.enemies.as_slice(),
+                self.game.path.as_slice(),
+                to_x,
+                to_y,
+            ) {
+                let e = &mut self.game.enemies[ei];
+                e.hp -= dmg;
+                if e.hp < 0 {
+                    e.hp = 0;
+                }
+            }
+            self.spawn_impact(to_x, to_y, kind, level);
             return;
         }
         let ttl = match kind {
@@ -2523,19 +2610,13 @@ impl App {
             damage: dmg,
             step_cd: Self::projectile_step_cd(kind),
             kind,
-            source_level: _level,
+            source_level: level,
             fx_id,
         });
 
         let muzzle_seed = self.rand_u32();
         self.game.fx.spawn_muzzle(kind, from, dir, muzzle_seed);
-        let tracer_seed = if kind == TowerKind::Sniper {
-            let tracer_seed = self.rand_u32();
-            self.game.fx.spawn_tracer_line(from, to, tracer_seed);
-            Some(tracer_seed)
-        } else {
-            None
-        };
+        let tracer_seed = None;
 
         self.queue_fx_event(FxEvent::Projectile {
             kind,
@@ -2598,8 +2679,7 @@ impl App {
         for (idx, ex, ey, dist) in targets {
             let falloff = 1.0 - ((dist - 1) as f32 * 0.18).clamp(0.0, 0.6);
             let chain_damage =
-                ((damage as f32) * (percent as f32 / 100.0) * falloff * chain_bonus).round()
-                    as i32;
+                ((damage as f32) * (percent as f32 / 100.0) * falloff * chain_bonus).round() as i32;
             if chain_damage <= 0 {
                 continue;
             }
@@ -2650,8 +2730,7 @@ impl App {
             }
             let tuning = Self::enemy_tuning(e.kind, wave);
             let splash_damage = ((damage as f32) * (percent as f32 / 100.0)).round() as i32;
-            let splash_damage =
-                Self::apply_damage_resist(splash_damage, tuning.splash_resist);
+            let splash_damage = Self::apply_damage_resist(splash_damage, tuning.splash_resist);
             if splash_damage <= 0 {
                 continue;
             }
@@ -2799,12 +2878,24 @@ impl App {
             TargetMode::MaisRapido => speed_score,
             TargetMode::MaisLento => -speed_score,
             TargetMode::MaisPerigoso => {
-                let healer_bonus = if enemy.kind == EnemyKind::Healer { 120 } else { 0 };
-                let shield_bonus = if enemy.kind == EnemyKind::Shielded { 60 } else { 0 };
+                let healer_bonus = if enemy.kind == EnemyKind::Healer {
+                    120
+                } else {
+                    0
+                };
+                let shield_bonus = if enemy.kind == EnemyKind::Shielded {
+                    60
+                } else {
+                    0
+                };
                 progress * 120 + enemy.hp / 4 + healer_bonus + shield_bonus - dist as i32
             }
             TargetMode::MaisCurador => {
-                let healer_weight = if enemy.kind == EnemyKind::Healer { 2000 } else { 0 };
+                let healer_weight = if enemy.kind == EnemyKind::Healer {
+                    2000
+                } else {
+                    0
+                };
                 healer_weight + progress * 50 - dist as i32
             }
         }
@@ -3245,27 +3336,27 @@ fn copy_to_clipboard(text: &str) -> Result<(), String> {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|e| format!("nao foi possivel executar `clip`: {e}"))?;
+            .map_err(|e| format!("nao foi possivel copiar para a area de transferencia: {e}"))?;
 
         if let Some(mut stdin) = child.stdin.take() {
             stdin
                 .write_all(text.as_bytes())
-                .map_err(|e| format!("falha ao escrever no clipboard: {e}"))?;
+                .map_err(|e| format!("falha ao copiar para a area de transferencia: {e}"))?;
         }
 
         let status = child
             .wait()
-            .map_err(|e| format!("falha ao aguardar `clip`: {e}"))?;
+            .map_err(|e| format!("falha ao copiar para a area de transferencia: {e}"))?;
         if status.success() {
             return Ok(());
         }
-        return Err(format!("`clip` falhou: {status:?}"));
+        return Err("falha ao copiar para a area de transferencia".to_string());
     }
 
     #[cfg(not(target_os = "windows"))]
     {
         let _ = text;
-        Err("clipboard nao suportado nesse sistema".to_string())
+        Err("area de transferencia nao suportada nesse sistema".to_string())
     }
 }
 

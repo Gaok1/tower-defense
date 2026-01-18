@@ -8,22 +8,22 @@ use std::{
     time::{Duration, Instant},
 };
 
+use super::commands::{NetCommand, NetEvent};
+use super::messages::{InboundFrame, WireMessage, decode_payload, spawn_send_task};
+use super::transfer::{
+    IncomingTransfer, SendOutcome, SendResult, handle_incoming_message, handle_incoming_stream,
+    send_message,
+};
+use crate::p2p_connection::p2p_connect;
+use crate::p2p_connection::p2p_connect::autotune::{AutotuneConfig, AutotuneState};
+use crate::p2p_connection::p2p_connect::mobility::{
+    ConnSignal, ConnectAttempt, ConnectResult, MobilityConfig, ReconnectState,
+};
 use base64::Engine;
 use quinn::{Endpoint, EndpointConfig, RecvStream, ServerConfig};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc as tokio_mpsc;
-use crate::p2p_connection::p2p_connect;
-use crate::p2p_connection::p2p_connect::autotune::{AutotuneConfig, AutotuneState};
-use super::commands::{NetCommand, NetEvent};
-use super::messages::{InboundFrame, WireMessage, decode_payload, spawn_send_task};
-use crate::p2p_connection::p2p_connect::mobility::{
-    ConnSignal, ConnectAttempt, ConnectResult, MobilityConfig, ReconnectState,
-};
-use super::transfer::{
-    IncomingTransfer, SendOutcome, SendResult, handle_incoming_message, handle_incoming_stream,
-    send_message,
-};
 
 pub const CHUNK_SIZE: usize = 64 * 1024;
 pub(crate) const PROTOCOL_VERSION: u8 = 3;
@@ -948,13 +948,14 @@ async fn handle_command(
             let evt_tx = evt_tx.clone();
             let connect_tx = connect_tx.clone();
             tokio::spawn(async move {
-                let connection = match p2p_connect::connect_peer(&endpoint, addr, CONNECT_TIMEOUT).await {
-                    Ok(conn) => Some(conn),
-                    Err(err) => {
-                        let _ = evt_tx.send(NetEvent::Log(format!("erro ao conectar {err}")));
-                        None
-                    }
-                };
+                let connection =
+                    match p2p_connect::connect_peer(&endpoint, addr, CONNECT_TIMEOUT).await {
+                        Ok(conn) => Some(conn),
+                        Err(err) => {
+                            let _ = evt_tx.send(NetEvent::Log(format!("erro ao conectar {err}")));
+                            None
+                        }
+                    };
                 let _ = connect_tx.send(ConnectResult {
                     id: attempt_id,
                     peer: addr,
@@ -977,7 +978,8 @@ async fn handle_command(
             } else {
                 let endpoint = endpoint.clone();
                 tokio::spawn(async move {
-                    let result = p2p_connect::quick_probe_peer(&endpoint, peer, PROBE_TIMEOUT).await;
+                    let result =
+                        p2p_connect::quick_probe_peer(&endpoint, peer, PROBE_TIMEOUT).await;
                     match result {
                         Ok(duration) => {
                             let _ = evt_tx.send(NetEvent::ProbeFinished {
@@ -1046,21 +1048,6 @@ fn log_transport_config(evt_tx: &Sender<NetEvent>) {
         "dados de arquivo: streams unidirecionais com chunks de {CHUNK_SIZE} bytes"
     )));
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 fn apply_autotune_target(
     connection: &quinn::Connection,
@@ -1345,9 +1332,9 @@ async fn read_frame(stream: &mut quinn::RecvStream) -> io::Result<Option<Vec<u8>
 
 #[cfg(test)]
 mod tests {
-    use crate::p2p_connection::p2p_connect::stun::stun_server_list;
-    use super::*;
     use super::super::messages::serialize_message;
+    use super::*;
+    use crate::p2p_connection::p2p_connect::stun::stun_server_list;
 
     #[test]
     fn stun_defaults_not_empty() {

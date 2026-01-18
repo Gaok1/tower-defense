@@ -42,6 +42,7 @@ pub enum FxEvent {
         tracer_seed: Option<u32>,
     },
     TracerLine {
+        kind: TowerKind,
         from_x: u16,
         from_y: u16,
         to_x: u16,
