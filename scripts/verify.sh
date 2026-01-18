@@ -7,5 +7,8 @@ cargo fmt --check
 echo "Running clippy..."
 cargo clippy --all-targets --all-features
 
+echo "Running compilation check..."
+cargo check --all-targets --all-features
+
 echo "Running tests..."
 cargo test
