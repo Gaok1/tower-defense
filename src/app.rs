@@ -1513,6 +1513,19 @@ impl App {
                         });
                     }
                 }
+                FxEvent::TracerLine {
+                    from_x,
+                    from_y,
+                    to_x,
+                    to_y,
+                    seed,
+                } => {
+                    self.game.fx.spawn_tracer_line(
+                        Vec2i::new(from_x as i16, from_y as i16),
+                        Vec2i::new(to_x as i16, to_y as i16),
+                        seed,
+                    );
+                }
                 FxEvent::Impact { kind, x, y, seed } => {
                     let pos = Vec2i::new(x as i16, y as i16);
                     match kind {
@@ -1991,13 +2004,46 @@ impl App {
         let mut spawns: Vec<(u16, u16, u16, u16, i32, TowerKind, u8)> = Vec::new();
 
         for t in &mut self.game.towers {
+            let stats = Self::tower_stats(t);
+            if t.kind == TowerKind::Tesla {
+                if t.cooldown > sp {
+                    t.cooldown -= sp;
+                } else {
+                    t.cooldown = 0;
+                }
+                let Some((tx, ty)) = Self::acquire_target(
+                    t,
+                    self.game.enemies.as_slice(),
+                    self.game.path.as_slice(),
+                    stats.range,
+                    wave,
+                ) else {
+                    continue;
+                };
+                let tick_damage =
+                    (stats.attack * sp as i32 / stats.fire_cd as i32).max(1);
+                if let Some(ei) = Self::enemy_index_at(
+                    self.game.enemies.as_slice(),
+                    self.game.path.as_slice(),
+                    tx,
+                    ty,
+                ) {
+                    let e = &mut self.game.enemies[ei];
+                    e.hp -= tick_damage;
+                    if e.hp < 0 {
+                        e.hp = 0;
+                    }
+                }
+                self.apply_tesla_chain(tx, ty, tick_damage, t.level);
+                self.spawn_tesla_beam(t.x, t.y, tx, ty);
+                continue;
+            }
             if t.cooldown > sp {
                 t.cooldown -= sp;
                 continue;
             }
             t.cooldown = 0;
 
-            let stats = Self::tower_stats(t);
             let Some((tx, ty)) = Self::acquire_target(
                 t,
                 self.game.enemies.as_slice(),
@@ -2422,6 +2468,20 @@ impl App {
         }
     }
 
+    fn spawn_tesla_beam(&mut self, from_x: u16, from_y: u16, to_x: u16, to_y: u16) {
+        let from = Vec2i::new(from_x as i16, from_y as i16);
+        let to = Vec2i::new(to_x as i16, to_y as i16);
+        let seed = self.rand_u32();
+        self.game.fx.spawn_tracer_line(from, to, seed);
+        self.queue_fx_event(FxEvent::TracerLine {
+            from_x,
+            from_y,
+            to_x,
+            to_y,
+            seed,
+        });
+    }
+
     fn spawn_projectile(
         &mut self,
         from_x: u16,
@@ -2432,6 +2492,10 @@ impl App {
         kind: TowerKind,
         _level: u8,
     ) {
+        if kind == TowerKind::Tesla {
+            self.spawn_tesla_beam(from_x, from_y, to_x, to_y);
+            return;
+        }
         let ttl = match kind {
             TowerKind::Sniper => 120,
             TowerKind::Cannon => 110,
@@ -2509,6 +2573,9 @@ impl App {
     }
 
     fn apply_tesla_chain(&mut self, x: u16, y: u16, damage: i32, level: u8) {
+        if damage <= 0 {
+            return;
+        }
         let (radius, max_targets, percent) = Self::tesla_chain_params(level);
         let mut candidates: Vec<(usize, u16, u16, u16)> = Vec::new();
         for (idx, e) in self.game.enemies.iter().enumerate() {
@@ -2524,10 +2591,15 @@ impl App {
         }
         candidates.sort_by_key(|&(_, _, _, dist)| dist);
 
-        for (idx, ex, ey, dist) in candidates.into_iter().take(max_targets) {
+        let targets: Vec<(usize, u16, u16, u16)> =
+            candidates.into_iter().take(max_targets).collect();
+        let chain_bonus = 1.0 + (targets.len() as f32 * 0.1);
+
+        for (idx, ex, ey, dist) in targets {
             let falloff = 1.0 - ((dist - 1) as f32 * 0.18).clamp(0.0, 0.6);
             let chain_damage =
-                ((damage as f32) * (percent as f32 / 100.0) * falloff).round() as i32;
+                ((damage as f32) * (percent as f32 / 100.0) * falloff * chain_bonus).round()
+                    as i32;
             if chain_damage <= 0 {
                 continue;
             }
