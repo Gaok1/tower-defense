@@ -2580,7 +2580,7 @@ fn target_mode_label(mode: TargetMode) -> &'static str {
 fn tower_kind_color(kind: TowerKind) -> Color {
     match kind {
         TowerKind::Basic => warn(),
-        TowerKind::Sniper => Color::LightCyan,
+        TowerKind::Sniper => Color::Yellow,
         TowerKind::Rapid => Color::Yellow,
         TowerKind::Cannon => Color::LightRed,
         TowerKind::Tesla => Color::LightBlue,
