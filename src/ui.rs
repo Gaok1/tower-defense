@@ -837,7 +837,7 @@ fn draw_compact_info(f: &mut Frame, app: &App, area: Rect) {
             app.game.build_kind.map(tower_kind_label).unwrap_or("-"),
             app.game
                 .build_kind
-                .map(App::tower_cost)
+                .map(|kind| App::tower_cost(kind, app.game.wave))
                 .map(|c| c.to_string())
                 .unwrap_or_else(|| "-".to_string())
         )),
