@@ -1,4 +1,5 @@
-use crate::app::{Enemy, MapViewport, TowerKind};
+use crate::app::{Enemy, EnemyKind, MapViewport, TowerKind};
+use crate::assets;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -38,10 +39,12 @@ pub enum FxKind {
     TargetFlash,
     Shatter,
     StatusOverlay,
+    HitFlash,
+    EnemyDeath,
 }
 
 impl FxKind {
-    pub const COUNT: usize = 10;
+    pub const COUNT: usize = 12;
 
     pub fn index(self) -> usize {
         match self {
@@ -55,6 +58,8 @@ impl FxKind {
             FxKind::TargetFlash => 7,
             FxKind::Shatter => 8,
             FxKind::StatusOverlay => 9,
+            FxKind::HitFlash => 10,
+            FxKind::EnemyDeath => 11,
         }
     }
 }
@@ -100,6 +105,12 @@ pub enum FxData {
     StatusOverlay {
         target: usize,
         kind: StatusOverlayKind,
+    },
+    HitFlash {
+        kind: EnemyKind,
+    },
+    EnemyDeath {
+        kind: EnemyKind,
     },
 }
 
@@ -195,6 +206,8 @@ impl FxManager {
         max_by_kind[FxKind::ImpactRing.index()] = MAX_IMPACT_RING;
         max_by_kind[FxKind::Dust.index()] = MAX_DUST;
         max_by_kind[FxKind::Projectile.index()] = MAX_PROJECTILE;
+        max_by_kind[FxKind::HitFlash.index()] = 200;
+        max_by_kind[FxKind::EnemyDeath.index()] = 100;
 
         Self {
             slots,
@@ -463,6 +476,32 @@ impl FxManager {
         self.spawn_entity(entity, false);
     }
 
+    pub fn spawn_hit_flash(&mut self, pos: Vec2i, kind: EnemyKind, seed: u32) {
+        let entity = FxEntity {
+            kind: FxKind::HitFlash,
+            pos,
+            ttl: 2,
+            age: 0,
+            priority: 90,
+            seed,
+            data: FxData::HitFlash { kind },
+        };
+        self.spawn_entity(entity, false);
+    }
+
+    pub fn spawn_enemy_death(&mut self, pos: Vec2i, kind: EnemyKind, seed: u32) {
+        let entity = FxEntity {
+            kind: FxKind::EnemyDeath,
+            pos,
+            ttl: 4,
+            age: 0,
+            priority: 60,
+            seed,
+            data: FxData::EnemyDeath { kind },
+        };
+        self.spawn_entity(entity, true);
+    }
+
     pub fn render(
         &mut self,
         buf: &mut Buffer,
@@ -499,6 +538,7 @@ impl FxManager {
                 let used = self.render_entity(
                     &self.slots[idx].entity,
                     lod,
+                    zoom,
                     buf,
                     area,
                     viewport,
@@ -517,6 +557,7 @@ impl FxManager {
         &self,
         entity: &FxEntity,
         lod: FxLod,
+        zoom: u16,
         buf: &mut Buffer,
         area: Rect,
         viewport: MapViewport,
@@ -816,7 +857,7 @@ impl FxManager {
                     used += draw_screen_line(
                         (x0 as u16, y0 as u16),
                         (x1 as u16, y1 as u16),
-                        Color::LightBlue,
+                        Color::Cyan,
                         Modifier::BOLD,
                         buf,
                         area,
@@ -828,7 +869,7 @@ impl FxManager {
                 used += draw_fx_cell(
                     entity.pos,
                     "▓",
-                    Color::LightBlue,
+                    Color::Cyan,
                     Modifier::BOLD,
                     buf,
                     area,
@@ -841,7 +882,7 @@ impl FxManager {
                 used += draw_fx_cell(
                     entity.pos,
                     glyph,
-                    Color::LightBlue,
+                    Color::Blue,
                     Modifier::BOLD,
                     buf,
                     area,
@@ -862,7 +903,7 @@ impl FxManager {
                     used += draw_fx_cell(
                         Vec2i::new(ex as i16, ey as i16),
                         glyph,
-                        Color::Cyan,
+                        Color::Blue,
                         Modifier::DIM,
                         buf,
                         area,
@@ -870,6 +911,46 @@ impl FxManager {
                         budget,
                     );
                 }
+            }
+            FxKind::HitFlash => {
+                let FxData::HitFlash { kind } = entity.data else {
+                    return 0;
+                };
+                let color = enemy_kind_color(kind);
+                let (glyph, modifier) = if entity.age == 0 {
+                    ("▓", Modifier::BOLD)
+                } else {
+                    ("░", Modifier::DIM)
+                };
+                used += draw_fx_cell(
+                    entity.pos,
+                    glyph,
+                    color,
+                    modifier,
+                    buf,
+                    area,
+                    viewport,
+                    budget,
+                );
+            }
+            FxKind::EnemyDeath => {
+                let FxData::EnemyDeath { kind } = entity.data else {
+                    return 0;
+                };
+                let color = enemy_kind_color(kind);
+                let sprite = assets::enemy_sprite(kind, zoom);
+                used += draw_fx_sprite_death(
+                    entity.pos,
+                    entity.age,
+                    entity.ttl,
+                    entity.seed,
+                    sprite,
+                    color,
+                    buf,
+                    area,
+                    viewport,
+                    budget,
+                );
             }
         }
         used
@@ -945,12 +1026,12 @@ fn lod_from_zoom(zoom: u16) -> FxLod {
 
 fn muzzle_profile(kind: TowerKind) -> MuzzleProfile {
     match kind {
-        TowerKind::Sniper => MuzzleProfile::new("▓", None, 1),
-        TowerKind::Rapid => MuzzleProfile::new("▓", None, 1),
-        TowerKind::Cannon => MuzzleProfile::new("█", Some("▓"), 3),
-        TowerKind::Tesla => MuzzleProfile::new("╳", None, 1),
-        TowerKind::Frost => MuzzleProfile::new("▒", None, 1),
-        TowerKind::Basic => MuzzleProfile::new("▓", None, 1),
+        TowerKind::Basic => MuzzleProfile::new("┼", Some("▒"), 2),
+        TowerKind::Sniper => MuzzleProfile::new("━", None, 1),
+        TowerKind::Rapid => MuzzleProfile::new("▪", Some("·"), 1),
+        TowerKind::Cannon => MuzzleProfile::new("◉", Some("▓"), 3),
+        TowerKind::Tesla => MuzzleProfile::new("╬", Some("╫"), 2),
+        TowerKind::Frost => MuzzleProfile::new("✦", Some("░"), 2),
     }
 }
 
@@ -972,23 +1053,23 @@ impl MuzzleProfile {
 
 fn projectile_glyphs(kind: TowerKind) -> (&'static str, &'static str) {
     match kind {
-        TowerKind::Sniper => ("█", "▒"),
-        TowerKind::Rapid => ("░", "·"),
-        TowerKind::Cannon => ("█", "▓"),
-        TowerKind::Tesla => ("▓", "▒"),
-        TowerKind::Frost => ("▒", "░"),
-        TowerKind::Basic => ("▒", "░"),
+        TowerKind::Basic => ("•", "·"),
+        TowerKind::Sniper => ("─", "─"),
+        TowerKind::Rapid => ("▪", "·"),
+        TowerKind::Cannon => ("●", "◍"),
+        TowerKind::Tesla => ("╋", "╌"),
+        TowerKind::Frost => ("◆", "░"),
     }
 }
 
 fn tower_kind_color(kind: TowerKind) -> Color {
     match kind {
-        TowerKind::Basic => Color::LightYellow,
+        TowerKind::Basic => Color::White,
         TowerKind::Sniper => Color::Yellow,
-        TowerKind::Rapid => Color::Yellow,
+        TowerKind::Rapid => Color::Green,
         TowerKind::Cannon => Color::LightRed,
-        TowerKind::Tesla => Color::LightBlue,
-        TowerKind::Frost => Color::LightBlue,
+        TowerKind::Tesla => Color::Cyan,
+        TowerKind::Frost => Color::Blue,
     }
 }
 
@@ -1275,4 +1356,117 @@ fn xorshift32(mut x: u32) -> u32 {
     x ^= x >> 17;
     x ^= x << 5;
     x
+}
+
+fn enemy_kind_color(kind: EnemyKind) -> Color {
+    match kind {
+        EnemyKind::Swarm => Color::LightRed,
+        EnemyKind::Runner => Color::LightYellow,
+        EnemyKind::Tank => Color::DarkGray,
+        EnemyKind::Shielded => Color::Cyan,
+        EnemyKind::Healer => Color::LightGreen,
+        EnemyKind::Sneak => Color::Magenta,
+    }
+}
+
+fn map_to_tile_origin(pos: Vec2i, area: Rect, viewport: MapViewport) -> Option<(u16, u16)> {
+    if pos.x < 0 || pos.y < 0 {
+        return None;
+    }
+    let cx = pos.x as u16;
+    let cy = pos.y as u16;
+    if cx < viewport.view_x || cy < viewport.view_y {
+        return None;
+    }
+    let gx = cx - viewport.view_x;
+    let gy = cy - viewport.view_y;
+    if gx >= viewport.vis_w || gy >= viewport.vis_h {
+        return None;
+    }
+    let tile_x = area.x + gx * viewport.tile_w;
+    let tile_y = area.y + gy * viewport.tile_h;
+    if tile_x >= area.right() || tile_y >= area.bottom() {
+        return None;
+    }
+    Some((tile_x, tile_y))
+}
+
+/// Render a sprite during death animation.
+/// age 0: full sprite dim — corpse flash
+/// age 1: ~half chars, scattered `▒`
+/// age 2: ~quarter chars, `░`
+/// age 3: few `·` dots
+fn draw_fx_sprite_death(
+    pos: Vec2i,
+    age: u8,
+    _ttl: u8,
+    seed: u32,
+    sprite: assets::Sprite,
+    color: Color,
+    buf: &mut Buffer,
+    area: Rect,
+    viewport: MapViewport,
+    budget: &mut i32,
+) -> u16 {
+    let Some((tile_x, tile_y)) = map_to_tile_origin(pos, area, viewport) else {
+        return 0;
+    };
+    let tile_w = viewport.tile_w as usize;
+    let tile_h = viewport.tile_h as usize;
+    let h = sprite.h.min(viewport.tile_h) as usize;
+    let w = sprite.w.min(viewport.tile_w) as usize;
+
+    let mut used = 0u16;
+    let mut rng = seed;
+
+    // survival probability per cell per age frame
+    // age 0 = 100%, age 1 = 60%, age 2 = 30%, age 3 = 10%
+    let survive_num = match age {
+        0 => 100u32,
+        1 => 60,
+        2 => 30,
+        _ => 10,
+    };
+
+    let glyphs: &[&str] = match age {
+        0 => &["▓", "▒"],
+        1 => &["▒", "░", "·"],
+        2 => &["░", "·", " "],
+        _ => &["·", " ", " "],
+    };
+
+    for sy in 0..h {
+        let row = sprite.row(sy);
+        for (sx, ch) in row.chars().take(w).enumerate() {
+            if *budget <= 0 {
+                return used;
+            }
+            // For age 0 skip spaces (transparent), for later ages also skip
+            if ch == ' ' && age == 0 {
+                continue;
+            }
+            rng = xorshift32(rng);
+            // probabilistic skip
+            if rng % 100 >= survive_num {
+                continue;
+            }
+            let glyph = glyphs[(rng as usize) % glyphs.len()];
+            if glyph == " " {
+                continue;
+            }
+            let x = tile_x + ((sx * tile_w) / sprite.w.max(1) as usize) as u16;
+            let y = tile_y + ((sy * tile_h) / sprite.h.max(1) as usize) as u16;
+            if x >= area.right() || y >= area.bottom() {
+                continue;
+            }
+            let modifier = Modifier::DIM;
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                let style = ratatui::style::Style::default().fg(color).add_modifier(modifier);
+                cell.set_symbol(glyph).set_style(style);
+                *budget -= 1;
+                used += 1;
+            }
+        }
+    }
+    used
 }

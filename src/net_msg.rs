@@ -106,6 +106,8 @@ pub enum NetMsg {
         name: String,
         x: u16,
         y: u16,
+        #[serde(default)]
+        pending_build: Option<(u16, u16, TowerKind)>,
     },
     Cmd {
         id: u32,

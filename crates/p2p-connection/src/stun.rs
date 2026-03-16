@@ -433,7 +433,7 @@ fn format_stun_resolve_error(server: &str, err: &io::Error) -> String {
     msg
 }
 
-pub fn stun_trace_enabled() -> bool {
+pub(crate) fn stun_trace_enabled() -> bool {
     let Ok(value) = std::env::var("PASTA_P2P_STUN_TRACE") else {
         return false;
     };

@@ -137,15 +137,39 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         f.render_widget(banner, notice_area);
     }
 
+    // C5: persistent disconnect banner at bottom of game screen
+    let (game_area, disconnect_banner_area) =
+        if app.screen == Screen::Game && app.multiplayer.peer_disconnected_in_game && content_area.height >= 2 {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(0), Constraint::Length(1)])
+                .split(content_area);
+            (chunks[0], Some(chunks[1]))
+        } else {
+            (content_area, None)
+        };
+
     match app.screen {
-        Screen::MainMenu => draw_main_menu(f, app, content_area),
-        Screen::Multiplayer => draw_multiplayer_menu(f, app, content_area),
-        Screen::MapSelect => draw_map_select(f, app, content_area),
-        Screen::LoadGame => draw_load_game(f, app, content_area),
+        Screen::MainMenu => draw_main_menu(f, app, game_area),
+        Screen::Multiplayer => draw_multiplayer_menu(f, app, game_area),
+        Screen::MapSelect => draw_map_select(f, app, game_area),
+        Screen::LoadGame => draw_load_game(f, app, game_area),
         Screen::Game => match app.ui.mode {
-            LayoutMode::Wide => draw_wide(f, app, content_area),
-            LayoutMode::Compact => draw_compact(f, app, content_area),
+            LayoutMode::Wide => draw_wide(f, app, game_area),
+            LayoutMode::Compact => draw_compact(f, app, game_area),
         },
+    }
+
+    if let Some(banner_rect) = disconnect_banner_area {
+        let banner = Paragraph::new("[ Peer desconectado — continuando solo ]")
+            .alignment(Alignment::Center)
+            .style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(warn())
+                    .add_modifier(Modifier::BOLD),
+            );
+        f.render_widget(banner, banner_rect);
     }
 }
 
@@ -1184,6 +1208,28 @@ fn draw_player_cursors(buf: &mut Buffer, area: Rect, vp: MapViewport, app: &App)
         return;
     }
 
+    // D4: render peer pending_build preview (blue background + tower glyph)
+    for cursor in app.multiplayer_cursors().iter().skip(1) {
+        if let Some((bx, by, kind)) = cursor.pending_build {
+            if bx >= vp.view_x
+                && by >= vp.view_y
+                && bx < vp.view_x + vp.vis_w
+                && by < vp.view_y + vp.vis_h
+            {
+                let gx = bx - vp.view_x;
+                let gy = by - vp.view_y;
+                let tx = area.x + gx * vp.tile_w;
+                let ty = area.y + gy * vp.tile_h;
+                let spr = assets::tower_sprite(kind, app.ui.zoom);
+                let st = Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Blue)
+                    .add_modifier(Modifier::BOLD);
+                draw_sprite(buf, tx, ty, vp.tile_w, vp.tile_h, spr, st);
+            }
+        }
+    }
+
     for (idx, cursor) in app.multiplayer_cursors().iter().enumerate() {
         let cell_x = cursor.x;
         let cell_y = cursor.y;
@@ -1357,11 +1403,19 @@ fn draw_multiplayer_menu(f: &mut Frame, app: &mut App, area: Rect) {
     let local_ip = local_endpoint
         .map(|addr| addr.to_string())
         .unwrap_or_else(|| "gerando...".to_string());
+    let dots = ["   ", ".  ", ".. ", "..."][(app.ui.anim_tick / 6) as usize % 4];
+    let status_text_owned;
     let status_text = match app.multiplayer.status {
         ConnectionStatus::Idle => "aguardando",
-        ConnectionStatus::FetchingIp => "preparando seu codigo",
+        ConnectionStatus::FetchingIp => {
+            status_text_owned = format!("preparando seu codigo{dots}");
+            &status_text_owned
+        }
         ConnectionStatus::Ready => "pronto",
-        ConnectionStatus::Connecting => "conectando...",
+        ConnectionStatus::Connecting => {
+            status_text_owned = format!("conectando{dots}");
+            &status_text_owned
+        }
         ConnectionStatus::Connected => "conectado",
         ConnectionStatus::Failed => "erro",
     };
@@ -1973,29 +2027,44 @@ fn draw_multiplayer_menu(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         "Voce".to_string()
     };
+    let local_icon = if app.multiplayer.role == MultiplayerRole::Host { "★" } else { "☆" };
     let local_suffix = if app.multiplayer.role == MultiplayerRole::Host {
         "voce, anfitriao"
     } else {
         "voce, convidado"
     };
-    players.push((0, format!("{local_name} ({local_suffix})"), true));
+    players.push((0, format!("{local_icon} {local_name} ({local_suffix})"), true));
 
     if app.multiplayer.active {
         for (idx, cursor) in app.multiplayer_cursors().iter().enumerate().skip(1) {
             let mut label = cursor.name.clone();
             if app.multiplayer.role == MultiplayerRole::Peer && idx == 1 {
-                label = format!("{label} (anfitriao)");
+                let peer_icon = "★";
+                label = format!("{peer_icon} {label} (anfitriao)");
             } else if app.multiplayer.role == MultiplayerRole::Host {
-                label = format!("{label} (convidado)");
+                let peer_icon = "☆";
+                // C2: verification badge
+                let badge = if app.multiplayer.peer_id.is_some() {
+                    if let Some(ref pid) = app.multiplayer.peer_id {
+                        format!(" [✓ {}]", &pid[..pid.len().min(8)])
+                    } else {
+                        String::new()
+                    }
+                } else if app.multiplayer.status == ConnectionStatus::Connected {
+                    " [autenticando...]".to_string()
+                } else {
+                    String::new()
+                };
+                label = format!("{peer_icon} {label}{badge} (convidado)");
             }
             players.push((idx, label, false));
         }
     } else if let Some(peer_name) = app.multiplayer.peer_name.as_ref() {
         let mut label = peer_name.clone();
         if app.multiplayer.role == MultiplayerRole::Peer {
-            label = format!("{label} (anfitriao)");
+            label = format!("★ {label} (anfitriao)");
         } else {
-            label = format!("{label} (convidado)");
+            label = format!("☆ {label} (convidado)");
         }
         players.push((1, label, false));
     }
@@ -2327,12 +2396,35 @@ fn draw_map_select(f: &mut Frame, app: &mut App, area: Rect) {
     let inner = preview.inner(rows[1]);
     f.render_widget(preview, rows[1]);
 
-    f.render_widget(
-        MapPreviewWidget {
-            map: app.selected_map(),
-        },
-        inner,
-    );
+    if peer_locked && inner.height >= 2 {
+        // C4: split preview area — map preview top, overlay bottom
+        let preview_rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(inner);
+        f.render_widget(
+            MapPreviewWidget {
+                map: app.selected_map(),
+            },
+            preview_rows[0],
+        );
+        let overlay = Paragraph::new("Aguardando o host selecionar o mapa...")
+            .alignment(Alignment::Center)
+            .style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(warn())
+                    .add_modifier(Modifier::BOLD),
+            );
+        f.render_widget(overlay, preview_rows[1]);
+    } else {
+        f.render_widget(
+            MapPreviewWidget {
+                map: app.selected_map(),
+            },
+            inner,
+        );
+    }
 
     let footer_cols = Layout::default()
         .direction(Direction::Horizontal)
@@ -2655,23 +2747,23 @@ fn target_mode_label(mode: TargetMode) -> &'static str {
 
 fn tower_kind_color(kind: TowerKind) -> Color {
     match kind {
-        TowerKind::Basic => warn(),
+        TowerKind::Basic => Color::White,
         TowerKind::Sniper => Color::Yellow,
-        TowerKind::Rapid => Color::Yellow,
+        TowerKind::Rapid => Color::Green,
         TowerKind::Cannon => Color::LightRed,
-        TowerKind::Tesla => Color::LightBlue,
-        TowerKind::Frost => Color::LightBlue,
+        TowerKind::Tesla => Color::Cyan,
+        TowerKind::Frost => Color::Blue,
     }
 }
 
 fn enemy_kind_color(kind: EnemyKind) -> Color {
     match kind {
         EnemyKind::Swarm => Color::LightRed,
-        EnemyKind::Runner => Color::Yellow,
-        EnemyKind::Tank => Color::Gray,
+        EnemyKind::Runner => Color::LightYellow,
+        EnemyKind::Tank => Color::DarkGray,
         EnemyKind::Shielded => Color::Cyan,
         EnemyKind::Healer => Color::LightGreen,
-        EnemyKind::Sneak => Color::LightMagenta,
+        EnemyKind::Sneak => Color::Magenta,
     }
 }
 
