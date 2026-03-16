@@ -13,6 +13,11 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+#[cfg(target_os = "windows")]
+use std::{
+    io::Write,
+    process::{Command, Stdio},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutMode {
