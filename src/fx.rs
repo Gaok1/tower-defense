@@ -422,6 +422,30 @@ impl FxManager {
         }
     }
 
+    pub fn spawn_tesla_beam_fx(&mut self, from: Vec2i, to: Vec2i, seed1: u32, seed2: u32) {
+        let arc1 = FxEntity {
+            kind: FxKind::ArcLightning,
+            pos: from,
+            ttl: 3,
+            age: 0,
+            priority: 85,
+            seed: seed1,
+            data: FxData::ArcLightning { from, to, segments_max: 12 },
+        };
+        self.spawn_entity(arc1, false);
+        let arc2 = FxEntity {
+            kind: FxKind::ArcLightning,
+            pos: from,
+            ttl: 1,
+            age: 0,
+            priority: 85,
+            seed: seed2,
+            data: FxData::ArcLightning { from, to, segments_max: 12 },
+        };
+        self.spawn_entity(arc2, false);
+        self.spawn_target_flash(to, seed1 ^ 0xBEEF);
+    }
+
     pub fn spawn_target_flash(&mut self, pos: Vec2i, seed: u32) {
         let entity = FxEntity {
             kind: FxKind::TargetFlash,
@@ -854,10 +878,11 @@ impl FxManager {
                         y1 = (y1 + j).clamp(y_min, y_max);
                     }
 
+                    let arc_color = if entity.age == 0 { Color::White } else { Color::Cyan };
                     used += draw_screen_line(
                         (x0 as u16, y0 as u16),
                         (x1 as u16, y1 as u16),
-                        Color::Cyan,
+                        arc_color,
                         Modifier::BOLD,
                         buf,
                         area,

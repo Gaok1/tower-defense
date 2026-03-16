@@ -2673,7 +2673,13 @@ impl App {
     }
 
     fn spawn_tesla_beam(&mut self, from_x: u16, from_y: u16, to_x: u16, to_y: u16) {
-        self.spawn_tracer_line_event(TowerKind::Tesla, from_x, from_y, to_x, to_y);
+        let from = Vec2i::new(from_x as i16, from_y as i16);
+        let to   = Vec2i::new(to_x as i16, to_y as i16);
+        let seed1 = self.rand_u32();
+        let seed2 = self.rand_u32();
+        self.game.fx.spawn_tesla_beam_fx(from, to, seed1, seed2);
+        self.queue_fx_event(FxEvent::ArcLightning { from_x, from_y, to_x, to_y, seed: seed1 });
+        self.queue_fx_event(FxEvent::ArcLightning { from_x, from_y, to_x, to_y, seed: seed2 });
     }
 
     fn spawn_projectile(
