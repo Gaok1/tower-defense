@@ -572,8 +572,7 @@ pub struct GameState {
     pub projectiles: Vec<Projectile>,
     pub fx: FxManager,
 
-    // economia/time
-    pub money_cd: u16,
+    // economia/waves
     pub pending_wave_start: bool,
     pub prep_ticks: u32,
 }
@@ -701,7 +700,6 @@ impl App {
                 enemies: vec![],
                 projectiles: vec![],
                 fx: FxManager::new(),
-                money_cd: 0,
                 pending_wave_start: false,
                 prep_ticks: 0,
             },
@@ -709,7 +707,7 @@ impl App {
             map_index,
         };
 
-        app.spawn_wave();
+        app.spawn_wave(false);
         app
     }
 
@@ -1950,14 +1948,13 @@ impl App {
             enemies: vec![],
             projectiles: vec![],
             fx: FxManager::new(),
-            money_cd: 0,
             pending_wave_start: false,
             prep_ticks: 0,
         };
 
         self.reset_ui_for_game();
         self.screen = Screen::Game;
-        self.spawn_wave();
+        self.spawn_wave(false);
     }
 
     pub fn on_tick_if_due(&mut self) {
@@ -2332,21 +2329,6 @@ impl App {
     }
 
     fn tick_economy_and_waves(&mut self) {
-        if self.dev_mode {
-            self.game.money_cd = 1;
-        }
-        // dinheiro por segundo (não por tick)
-        let passive_money_allowed = !self.game.pending_wave_start || self.game.prep_ticks < 60;
-        if passive_money_allowed {
-            if self.game.money_cd > 0 {
-                self.game.money_cd -= 1;
-            } else {
-                // ganho lento, pra combinar com ritmo mais "tático"
-                self.game.money = self.game.money.saturating_add(2);
-                self.game.money_cd = 20; // 20 ticks * 50ms = 1s
-            }
-        }
-
         let alive = self.game.enemies.iter().any(|e| e.hp > 0);
         if !alive && (self.dev_mode || self.game.lives > 0) {
             if !self.game.pending_wave_start {
@@ -2359,15 +2341,21 @@ impl App {
         }
     }
 
-    fn spawn_wave(&mut self) {
+    fn spawn_wave(&mut self, append: bool) {
         // wave com mistura por budget (HP + velocidade + tipo).
         let wave = self.game.wave.max(1);
         let mut budget = 14 + wave * 8;
         let max_enemies = (8 + wave).clamp(8, 24) as usize;
 
-        self.game.enemies.clear();
+        if !append {
+            self.game.enemies.clear();
+            self.game.projectiles.clear();
+            self.game.fx.clear();
+        }
         self.game.pending_wave_start = false;
         self.game.prep_ticks = 0;
+        // stagger novo batch a partir dos inimigos já presentes
+        let base_stagger = self.game.enemies.len() as u16 * 6;
         let mut spawned = 0usize;
         let mut attempts = 0;
         while budget > 0 && spawned < max_enemies && attempts < 100 {
@@ -2384,8 +2372,7 @@ impl App {
             }
 
             let reward = Self::enemy_reward_value(cost, wave);
-            // pequena defasagem no spawn pelo move_cd inicial
-            let stagger = (spawned as u16 * 6).min(60);
+            let stagger = base_stagger + (spawned as u16 * 6).min(60);
             self.game.enemies.push(Enemy {
                 kind,
                 path_i: 0,
@@ -2401,10 +2388,6 @@ impl App {
             spawned += 1;
             attempts += 1;
         }
-
-        // limpa FX antigos pra não virar bagunça visual ao trocar wave
-        self.game.projectiles.clear();
-        self.game.fx.clear();
 
         self.autosave_wave();
     }
@@ -2597,30 +2580,26 @@ impl App {
         }
     }
 
-    pub fn prep_bonus_gold(&self) -> i32 {
-        let seconds = (self.game.prep_ticks / 20) as i32;
-        if seconds == 0 {
-            return 0;
-        }
-        let wave_bonus = (self.game.wave / 3).max(1);
-        seconds.saturating_mul(2 + wave_bonus)
+    pub fn early_send_bonus(&self) -> i32 {
+        let wave = self.game.wave.max(1);
+        5 + wave * 2
     }
 
     fn start_pending_wave(&mut self) {
-        if !self.game.pending_wave_start {
-            self.show_top_notice("wave ainda em andamento");
-            return;
+        let enemies_alive = self.game.enemies.iter().any(|e| e.hp > 0);
+        if enemies_alive {
+            // early send: próxima wave em cima das atuais → bônus por risco
+            self.game.wave += 1;
+            let bonus = self.early_send_bonus();
+            if !self.dev_mode {
+                self.game.money = self.game.money.saturating_add(bonus);
+                self.show_top_notice(format!("+${bonus} early send"));
+            }
+            self.spawn_wave(true);
+        } else if self.game.pending_wave_start {
+            // envio normal entre waves
+            self.spawn_wave(false);
         }
-        if self.game.enemies.iter().any(|e| e.hp > 0) {
-            return;
-        }
-
-        let bonus = self.prep_bonus_gold();
-        if bonus > 0 && !self.dev_mode {
-            self.game.money = self.game.money.saturating_add(bonus);
-            self.show_top_notice(format!("bonus de preparo +${bonus}"));
-        }
-        self.spawn_wave();
     }
 
     fn apply_slow_resist(slow_percent: u8, resist: u8) -> u8 {
@@ -3245,7 +3224,6 @@ impl App {
             enemies: vec![],
             projectiles: vec![],
             fx: FxManager::new(),
-            money_cd: 0,
             pending_wave_start: false,
             prep_ticks: 0,
         };
@@ -3273,7 +3251,7 @@ impl App {
         }
 
         if spawn_wave {
-            self.spawn_wave();
+            self.spawn_wave(false);
         }
     }
 

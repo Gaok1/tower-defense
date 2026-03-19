@@ -952,13 +952,12 @@ fn draw_footer_buttons(f: &mut Frame, app: &mut App, area: Rect) {
         ])
         .split(area);
 
-    let prep_bonus = app.prep_bonus_gold();
-    let start_wave_label = if app.game.pending_wave_start {
-        if prep_bonus > 0 {
-            format!("Start Wave +${prep_bonus} [R]")
-        } else {
-            "Start Wave [R]".to_string()
-        }
+    let enemies_alive = app.game.enemies.iter().any(|e| e.hp > 0);
+    let start_wave_label = if enemies_alive {
+        let bonus = app.early_send_bonus();
+        format!("Early Send +${bonus} [R]")
+    } else if app.game.pending_wave_start {
+        "Start Wave [R]".to_string()
     } else {
         "Start Wave [R]".to_string()
     };
@@ -983,7 +982,7 @@ fn draw_footer_buttons(f: &mut Frame, app: &mut App, area: Rect) {
     for (i, (id, label)) in defs.iter().enumerate() {
         let hovered = app.ui.hover_button == Some(*id);
         let active = (*id == ButtonId::StartPause && app.game.running)
-            || (*id == ButtonId::StartWave && app.game.pending_wave_start);
+            || (*id == ButtonId::StartWave && (app.game.pending_wave_start || enemies_alive));
 
         let base = if hovered {
             Style::default().fg(Color::Black).bg(accent())
@@ -2357,11 +2356,7 @@ fn draw_load_game(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_map_select(f: &mut Frame, app: &mut App, area: Rect) {
     let peer_locked = app.multiplayer.active && app.multiplayer.role == MultiplayerRole::Peer;
-    let help_nav = if peer_locked {
-        "host seleciona"
-    } else {
-        "navigate"
-    };
+    let help_nav = if peer_locked { "host seleciona" } else { "navigate" };
     let help_play = if peer_locked { "aguarde" } else { "play" };
 
     let rows = Layout::default()
@@ -2369,7 +2364,7 @@ fn draw_map_select(f: &mut Frame, app: &mut App, area: Rect) {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(10),
-            Constraint::Length(5),
+            Constraint::Length(3),
         ])
         .split(area);
 
@@ -2397,15 +2392,12 @@ fn draw_map_select(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(preview, rows[1]);
 
     if peer_locked && inner.height >= 2 {
-        // C4: split preview area — map preview top, overlay bottom
         let preview_rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(1)])
             .split(inner);
         f.render_widget(
-            MapPreviewWidget {
-                map: app.selected_map(),
-            },
+            MapPreviewWidget { map: app.selected_map() },
             preview_rows[0],
         );
         let overlay = Paragraph::new("Aguardando o host selecionar o mapa...")
@@ -2418,125 +2410,113 @@ fn draw_map_select(f: &mut Frame, app: &mut App, area: Rect) {
             );
         f.render_widget(overlay, preview_rows[1]);
     } else {
-        f.render_widget(
-            MapPreviewWidget {
-                map: app.selected_map(),
-            },
-            inner,
-        );
+        f.render_widget(MapPreviewWidget { map: app.selected_map() }, inner);
     }
 
-    let footer_cols = Layout::default()
-        .direction(Direction::Horizontal)
+    // Footer: 3 compact rows (info / nav / play)
+    let footer_rows = Layout::default()
+        .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(12),
-            Constraint::Min(10),
-            Constraint::Length(12),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
         ])
         .split(rows[2]);
 
-    let center_rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Length(2)])
-        .split(footer_cols[1]);
+    // Row 0: map name + metadata
+    let map = app.selected_map();
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                map.name,
+                Style::default().fg(panel_title()).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(
+                    "  {}×{}  path {}  {}/{}",
+                    map.grid_w,
+                    map.grid_h,
+                    map.path.len(),
+                    app.selected_map_index() + 1,
+                    app.maps_len()
+                ),
+                Style::default().fg(text_dim()),
+            ),
+        ]))
+        .alignment(Alignment::Center)
+        .style(Style::default().bg(bg())),
+        footer_rows[0],
+    );
+
+    // Row 1: ◀ Prev  ···  Next ▶
+    let nav_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(10),
+            Constraint::Min(1),
+            Constraint::Length(10),
+        ])
+        .split(footer_rows[1]);
 
     let left_style = if !peer_locked && app.ui.hover_map_select == Some(MapSelectAction::Prev) {
-        Style::default().fg(Color::Black).bg(accent())
+        Style::default().fg(Color::Black).bg(accent()).add_modifier(Modifier::BOLD)
     } else if peer_locked {
-        Style::default()
-            .fg(text_dim())
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::DIM)
+        Style::default().fg(text_dim()).bg(bg()).add_modifier(Modifier::DIM)
     } else {
-        Style::default().fg(Color::White).bg(Color::DarkGray)
+        Style::default().fg(accent()).bg(bg())
     };
     let right_style = if !peer_locked && app.ui.hover_map_select == Some(MapSelectAction::Next) {
-        Style::default().fg(Color::Black).bg(accent())
+        Style::default().fg(Color::Black).bg(accent()).add_modifier(Modifier::BOLD)
     } else if peer_locked {
-        Style::default()
-            .fg(text_dim())
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::DIM)
+        Style::default().fg(text_dim()).bg(bg()).add_modifier(Modifier::DIM)
     } else {
-        Style::default().fg(Color::White).bg(Color::DarkGray)
+        Style::default().fg(accent()).bg(bg())
     };
+
+    f.render_widget(
+        Paragraph::new(" ◀ Prev").alignment(Alignment::Left).style(left_style),
+        nav_cols[0],
+    );
+    app.ui.hit.map_select_left = nav_cols[0];
+
+    f.render_widget(
+        Paragraph::new("").style(Style::default().bg(bg())),
+        nav_cols[1],
+    );
+
+    f.render_widget(
+        Paragraph::new("Next ▶ ").alignment(Alignment::Right).style(right_style),
+        nav_cols[2],
+    );
+    app.ui.hit.map_select_right = nav_cols[2];
+
+    // Row 2: play button centered
+    let play_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(25),
+            Constraint::Min(1),
+            Constraint::Percentage(25),
+        ])
+        .split(footer_rows[2]);
+
     let start_style = if !peer_locked && app.ui.hover_map_select == Some(MapSelectAction::Start) {
-        Style::default().fg(Color::Black).bg(good())
+        Style::default().fg(Color::Black).bg(good()).add_modifier(Modifier::BOLD)
     } else if peer_locked {
-        Style::default()
-            .fg(text_dim())
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::DIM)
+        Style::default().fg(text_dim()).bg(Color::DarkGray).add_modifier(Modifier::DIM)
     } else {
         Style::default().fg(Color::White).bg(Color::DarkGray)
     };
 
+    f.render_widget(Paragraph::new("").style(Style::default().bg(bg())), play_cols[0]);
     f.render_widget(
-        Paragraph::new(" ◀ Prev ")
+        Paragraph::new(if peer_locked { " Host... " } else { " Play ▶ " })
             .alignment(Alignment::Center)
-            .style(left_style)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(panel_border())),
-            ),
-        footer_cols[0],
+            .style(start_style),
+        play_cols[1],
     );
-    app.ui.hit.map_select_left = footer_cols[0];
-
-    let map = app.selected_map();
-    let info = Paragraph::new(vec![
-        Line::from(Span::styled(
-            map.name,
-            Style::default()
-                .fg(panel_title())
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(format!(
-            "{}x{} • path {} tiles • map {} of {}",
-            map.grid_w,
-            map.grid_h,
-            map.path.len(),
-            app.selected_map_index() + 1,
-            app.maps_len()
-        )),
-    ])
-    .alignment(Alignment::Center)
-    .style(Style::default().bg(bg()));
-    f.render_widget(info, center_rows[0]);
-
-    f.render_widget(
-        Paragraph::new(if peer_locked {
-            " Host... "
-        } else {
-            " Play ▶ "
-        })
-        .alignment(Alignment::Center)
-        .style(start_style)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(panel_border())),
-        ),
-        center_rows[1],
-    );
-    app.ui.hit.map_select_start = center_rows[1];
-
-    f.render_widget(
-        Paragraph::new(" Next ▶ ")
-            .alignment(Alignment::Center)
-            .style(right_style)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(panel_border())),
-            ),
-        footer_cols[2],
-    );
-    app.ui.hit.map_select_right = footer_cols[2];
+    f.render_widget(Paragraph::new("").style(Style::default().bg(bg())), play_cols[2]);
+    app.ui.hit.map_select_start = play_cols[1];
 }
 
 struct MapPreviewWidget<'a> {
