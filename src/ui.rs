@@ -61,30 +61,30 @@ fn good() -> Color {
 #[inline]
 fn map_bg(zoom: u16) -> Color {
     match zoom {
-        0 | 1 => Color::Rgb(8, 22, 10),
-        2 => Color::Rgb(12, 28, 12),
-        3 => Color::Rgb(16, 34, 16),
-        _ => Color::Rgb(20, 40, 20),
+        0 | 1 => Color::Rgb(10, 10, 18),
+        2 => Color::Rgb(14, 14, 24),
+        3 => Color::Rgb(18, 18, 30),
+        _ => Color::Rgb(22, 22, 36),
     }
 }
 
 #[inline]
 fn path_bg(zoom: u16) -> Color {
     match zoom {
-        0 | 1 => Color::Rgb(20, 20, 10),
-        2 => Color::Rgb(26, 26, 12),
-        3 => Color::Rgb(32, 32, 14),
-        _ => Color::Rgb(38, 38, 16),
+        0 | 1 => Color::Rgb(28, 18, 10),
+        2 => Color::Rgb(36, 23, 13),
+        3 => Color::Rgb(44, 28, 16),
+        _ => Color::Rgb(52, 33, 19),
     }
 }
 
 #[inline]
 fn goal_bg(zoom: u16) -> Color {
     match zoom {
-        0 | 1 => Color::Rgb(20, 12, 26),
-        2 => Color::Rgb(26, 16, 32),
-        3 => Color::Rgb(32, 20, 38),
-        _ => Color::Rgb(38, 24, 44),
+        0 | 1 => Color::Rgb(22, 8, 30),
+        2 => Color::Rgb(28, 10, 38),
+        3 => Color::Rgb(34, 12, 46),
+        _ => Color::Rgb(40, 14, 54),
     }
 }
 
@@ -1128,13 +1128,13 @@ impl<'a> Widget for MapWidget<'a> {
                                 (["░", "▒", "▓"][k as usize], Color::Magenta)
                             }
                         } else if is_path {
-                            let k = tex_pick(cell_x, cell_y, dx, dy, 0xCAFE_u32, 5);
-                            (["·", "░", "▒", "░", "·"][k as usize], Color::LightYellow)
+                            let k = tex_pick(cell_x, cell_y, dx, dy, 0xCAFE_u32, 7);
+                            (["╌", "┄", "·", "╌", "·", "┄", "╌"][k as usize], Color::Rgb(90, 58, 32))
                         } else {
-                            let k = tex_pick(cell_x, cell_y, dx, dy, 0x1234_u32, 7);
+                            let k = tex_pick(cell_x, cell_y, dx, dy, 0x1234_u32, 9);
                             (
-                                [" ", "·", "˙", "✿", "˙", "·", " "][k as usize],
-                                Color::Green,
+                                [" ", " ", "∙", "╌", "∙", " ", "▪", "∙", " "][k as usize],
+                                Color::Rgb(38, 38, 55),
                             )
                         };
 
@@ -2601,10 +2601,10 @@ impl<'a> Widget for MapPreviewWidget<'a> {
                                     ("▓", Color::Magenta)
                                 }
                             } else if is_path {
-                                ("▚", Color::LightYellow)
+                                ("╌", Color::Rgb(90, 58, 32))
                             } else {
                                 let k = tex_pick(cell_x, cell_y, dx, dy, 0x1234_u32, 5);
-                                ([" ", "·", "˙", "·", " "][k as usize], Color::Green)
+                                ([" ", " ", "∙", "▪", "∙"][k as usize], Color::Rgb(38, 38, 55))
                             };
 
                             let x = tile_x + dx;
