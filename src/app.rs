@@ -494,6 +494,10 @@ pub struct Tower {
     pub level: u8,
     pub cooldown: u16, // ticks até poder atirar
     pub target_mode: TargetMode,
+    #[serde(default)]
+    pub fire_age: u8, // contagem regressiva pós-disparo (10→0), 0 = idle
+    #[serde(default)]
+    pub fire_dir: (i16, i16), // direção normalizada do último tiro
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -696,6 +700,8 @@ impl App {
                     level: 1,
                     cooldown: 0,
                     target_mode: TargetMode::Primeiro,
+                    fire_age: 0,
+                    fire_dir: (0, 0),
                 }],
                 enemies: vec![],
                 projectiles: vec![],
@@ -1907,6 +1913,8 @@ impl App {
                     .target_mode
                     .map(TargetMode::from)
                     .unwrap_or(TargetMode::Primeiro),
+                fire_age: 0,
+                fire_dir: (0, 0),
             })
             .collect();
 
@@ -1919,6 +1927,8 @@ impl App {
                 level: 1,
                 cooldown: 0,
                 target_mode: TargetMode::Primeiro,
+                fire_age: 0,
+                fire_dir: (0, 0),
             });
         }
 
@@ -2159,6 +2169,9 @@ impl App {
             let mut tesla_action: Option<(u16, u16, u16, u16, i32, u8)> = None;
             {
                 let t = &mut self.game.towers[ti];
+                if t.fire_age > 0 {
+                    t.fire_age = t.fire_age.saturating_sub(1);
+                }
                 let stats = Self::tower_stats(t);
                 if t.kind == TowerKind::Tesla {
                     if t.cooldown > sp {
@@ -2188,6 +2201,11 @@ impl App {
                             e.hp = 0;
                         }
                     }
+                    t.fire_age = 4;
+                    t.fire_dir = (
+                        (tx as i16 - t.x as i16).signum(),
+                        (ty as i16 - t.y as i16).signum(),
+                    );
                     tesla_action = Some((t.x, t.y, tx, ty, tick_damage, t.level));
                 } else {
                     if t.cooldown > sp {
@@ -2206,6 +2224,11 @@ impl App {
                         continue;
                     };
 
+                    t.fire_dir = (
+                        (tx as i16 - t.x as i16).signum(),
+                        (ty as i16 - t.y as i16).signum(),
+                    );
+                    t.fire_age = 10;
                     spawns.push((t.x, t.y, tx, ty, stats.attack, t.kind, t.level));
                     t.cooldown = stats.fire_cd;
                 }
@@ -3220,6 +3243,8 @@ impl App {
                 level: 1,
                 cooldown: 0,
                 target_mode: TargetMode::Primeiro,
+                fire_age: 0,
+                fire_dir: (0, 0),
             }],
             enemies: vec![],
             projectiles: vec![],
@@ -3356,6 +3381,8 @@ impl App {
             level: 1,
             cooldown: 0,
             target_mode: TargetMode::Primeiro,
+            fire_age: 0,
+            fire_dir: (0, 0),
         });
         true
     }
@@ -3590,6 +3617,8 @@ impl App {
             level: 1,
             cooldown: 0,
             target_mode: TargetMode::Primeiro,
+            fire_age: 0,
+            fire_dir: (0, 0),
         };
         Some(Self::tower_stats(&t))
     }
