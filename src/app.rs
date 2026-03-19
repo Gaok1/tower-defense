@@ -683,7 +683,7 @@ impl App {
             game: GameState {
                 running: false,
                 speed: 1,
-                money: 250,
+                money: 175,
                 lives: 20,
                 wave: 1,
                 grid_w: map.grid_w,
@@ -2367,8 +2367,8 @@ impl App {
     fn spawn_wave(&mut self, append: bool) {
         // wave com mistura por budget (HP + velocidade + tipo).
         let wave = self.game.wave.max(1);
-        let mut budget = 14 + wave * 8;
-        let max_enemies = (8 + wave).clamp(8, 24) as usize;
+        let mut budget = 20 + wave * 12;
+        let max_enemies = (9 + wave).clamp(9, 28) as usize;
 
         if !append {
             self.game.enemies.clear();
@@ -2468,7 +2468,7 @@ impl App {
         let wave = wave.max(1);
         match kind {
             EnemyKind::Swarm => EnemyTuning {
-                base_hp: 28 + wave * 5,
+                base_hp: 30 + wave * 9,
                 move_cd: base + 2,
                 slow_resist: 0,
                 splash_resist: 0,
@@ -2477,7 +2477,7 @@ impl App {
                 heal_amount: 0,
             },
             EnemyKind::Runner => EnemyTuning {
-                base_hp: 22 + wave * 4,
+                base_hp: 24 + wave * 8,
                 move_cd: base.saturating_sub(5).max(5),
                 slow_resist: 0,
                 splash_resist: 0,
@@ -2486,7 +2486,7 @@ impl App {
                 heal_amount: 0,
             },
             EnemyKind::Tank => EnemyTuning {
-                base_hp: 95 + wave * 14,
+                base_hp: 110 + wave * 28,
                 move_cd: base + 3,
                 slow_resist: 15,
                 splash_resist: 30,
@@ -2495,7 +2495,7 @@ impl App {
                 heal_amount: 0,
             },
             EnemyKind::Shielded => EnemyTuning {
-                base_hp: 60 + wave * 9,
+                base_hp: 70 + wave * 18,
                 move_cd: base + 1,
                 slow_resist: 20,
                 splash_resist: 15,
@@ -2504,16 +2504,16 @@ impl App {
                 heal_amount: 0,
             },
             EnemyKind::Healer => EnemyTuning {
-                base_hp: 52 + wave * 8,
+                base_hp: 60 + wave * 16,
                 move_cd: base + 1,
                 slow_resist: 10,
                 splash_resist: 10,
                 rapid_resist: 0,
                 heal_radius: 1,
-                heal_amount: 6 + (wave / 2),
+                heal_amount: 8 + wave,
             },
             EnemyKind::Sneak => EnemyTuning {
-                base_hp: 36 + wave * 6,
+                base_hp: 40 + wave * 12,
                 move_cd: base.saturating_sub(2).max(7),
                 slow_resist: 20,
                 splash_resist: 12,
@@ -3226,7 +3226,7 @@ impl App {
         self.game = GameState {
             running: false,
             speed: 1,
-            money: 250,
+            money: 175,
             lives: 20,
             wave: 1,
             grid_w: map.grid_w,
@@ -3513,40 +3513,40 @@ impl App {
         match kind {
             TowerKind::Basic => TowerTuning {
                 base_attack: 40,
-                attack_step: 20,
+                attack_step: 15,
                 base_range: 6,
                 range_every: 2,
                 base_cd: 18,
-                cd_drop_every: 3,
+                cd_drop_every: 4,
                 cd_drop: 2,
                 cd_min: 8,
                 cd_max: 24,
             },
             TowerKind::Sniper => TowerTuning {
                 base_attack: 90,
-                attack_step: 30,
+                attack_step: 22,
                 base_range: 9,
                 range_every: 3,
                 base_cd: 26,
-                cd_drop_every: 4,
+                cd_drop_every: 5,
                 cd_drop: 2,
                 cd_min: 14,
                 cd_max: 30,
             },
             TowerKind::Rapid => TowerTuning {
                 base_attack: 22,
-                attack_step: 8,
+                attack_step: 6,
                 base_range: 5,
                 range_every: 4,
                 base_cd: 12,
-                cd_drop_every: 2,
+                cd_drop_every: 3,
                 cd_drop: 1,
                 cd_min: 6,
                 cd_max: 18,
             },
             TowerKind::Cannon => TowerTuning {
                 base_attack: 120,
-                attack_step: 40,
+                attack_step: 30,
                 base_range: 6,
                 range_every: 3,
                 base_cd: 32,
@@ -3557,7 +3557,7 @@ impl App {
             },
             TowerKind::Tesla => TowerTuning {
                 base_attack: 55,
-                attack_step: 18,
+                attack_step: 13,
                 base_range: 7,
                 range_every: 2,
                 base_cd: 14,
@@ -3568,7 +3568,7 @@ impl App {
             },
             TowerKind::Frost => TowerTuning {
                 base_attack: 30,
-                attack_step: 12,
+                attack_step: 9,
                 base_range: 7,
                 range_every: 2,
                 base_cd: 16,
@@ -3582,29 +3582,29 @@ impl App {
 
     pub fn tower_cost(kind: TowerKind, wave: i32) -> i32 {
         let base = match kind {
-            TowerKind::Basic => 60,
-            TowerKind::Sniper => 95,
-            TowerKind::Rapid => 55,
-            TowerKind::Cannon => 110,
-            TowerKind::Tesla => 85,
-            TowerKind::Frost => 75,
+            TowerKind::Basic => 80,
+            TowerKind::Sniper => 125,
+            TowerKind::Rapid => 75,
+            TowerKind::Cannon => 145,
+            TowerKind::Tesla => 110,
+            TowerKind::Frost => 100,
         };
         let wave = wave.max(1);
-        let wave_bonus = (base * (wave - 1)) / 20;
+        let wave_bonus = (base * (wave - 1)) / 16;
         base + wave_bonus
     }
 
     pub fn tower_upgrade_cost(kind: TowerKind, wave: i32) -> i32 {
         let base = match kind {
-            TowerKind::Basic => 40,
-            TowerKind::Sniper => 55,
-            TowerKind::Rapid => 35,
-            TowerKind::Cannon => 60,
-            TowerKind::Tesla => 45,
-            TowerKind::Frost => 40,
+            TowerKind::Basic => 65,
+            TowerKind::Sniper => 90,
+            TowerKind::Rapid => 58,
+            TowerKind::Cannon => 100,
+            TowerKind::Tesla => 75,
+            TowerKind::Frost => 65,
         };
         let wave = wave.max(1);
-        let wave_bonus = (base * (wave - 1)) / 24;
+        let wave_bonus = (base * (wave - 1)) / 18;
         base + wave_bonus
     }
 
