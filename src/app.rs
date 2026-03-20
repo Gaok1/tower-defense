@@ -95,6 +95,11 @@ pub struct MultiplayerState {
     pub next_cmd_id: u32,
     pub peer_id: Option<String>,
     pub peer_disconnected_in_game: bool,
+    pub reconnecting: bool,
+    pub reconnect_until: Option<Instant>,
+    pub reconnect_last_attempt: Option<Instant>,
+    pub reconnect_peer_addr: Option<SocketAddr>,
+    pub reconnect_was_running: bool,
 }
 
 impl MultiplayerState {
@@ -118,6 +123,11 @@ impl MultiplayerState {
             next_cmd_id: 1,
             peer_id: None,
             peer_disconnected_in_game: false,
+            reconnecting: false,
+            reconnect_until: None,
+            reconnect_last_attempt: None,
+            reconnect_peer_addr: None,
+            reconnect_was_running: false,
         }
     }
 
@@ -629,6 +639,47 @@ impl App {
         }
     }
 
+    fn tick_reconnect(&mut self) {
+        if !self.multiplayer.reconnecting {
+            return;
+        }
+
+        let timed_out = self
+            .multiplayer
+            .reconnect_until
+            .map(|t| Instant::now() >= t)
+            .unwrap_or(true);
+
+        if timed_out {
+            self.multiplayer.reconnecting = false;
+            self.multiplayer.reconnect_until = None;
+            self.multiplayer.reconnect_last_attempt = None;
+            self.multiplayer.reconnect_peer_addr = None;
+            self.multiplayer.peer_disconnected_in_game = true;
+            self.multiplayer.active = false;
+            self.multiplayer.status = ConnectionStatus::Ready;
+            self.game.running = true;
+            self.show_top_notice("Conexão perdida.".to_string());
+            return;
+        }
+
+        let should_retry = self
+            .multiplayer
+            .reconnect_last_attempt
+            .map(|t| t.elapsed() >= Duration::from_secs(3))
+            .unwrap_or(true);
+
+        if should_retry {
+            if let (Some(addr), Some(net)) = (
+                self.multiplayer.reconnect_peer_addr,
+                self.multiplayer.network.as_ref(),
+            ) {
+                net.node.connect_peer(addr);
+                self.multiplayer.reconnect_last_attempt = Some(Instant::now());
+            }
+        }
+    }
+
     pub fn new() -> Self {
         let rng = 0xC0FFEE_u64 ^ (Instant::now().elapsed().as_nanos() as u64);
         let maps = Self::build_maps();
@@ -777,6 +828,11 @@ impl App {
         self.screen = Screen::MainMenu;
         self.multiplayer.active = false;
         self.multiplayer.peer_disconnected_in_game = false;
+        self.multiplayer.reconnecting = false;
+        self.multiplayer.reconnect_until = None;
+        self.multiplayer.reconnect_last_attempt = None;
+        self.multiplayer.reconnect_peer_addr = None;
+        self.multiplayer.reconnect_was_running = false;
         self.multiplayer.shutdown_network();
         self.multiplayer.cursors.clear();
         self.ui.hover_main_menu = None;
@@ -1211,7 +1267,23 @@ impl App {
                 });
                 self.ensure_cursor_slots();
 
-                if self.multiplayer.role == MultiplayerRole::Host {
+                if self.multiplayer.reconnecting {
+                    self.multiplayer.reconnecting = false;
+                    self.multiplayer.reconnect_until = None;
+                    self.multiplayer.reconnect_last_attempt = None;
+                    self.multiplayer.reconnect_peer_addr = None;
+                    if self.screen == Screen::Game {
+                        self.game.running = self.multiplayer.reconnect_was_running;
+                        self.send_multiplayer_state();
+                        let name = self
+                            .multiplayer
+                            .peer_name
+                            .clone()
+                            .unwrap_or_else(|| "Peer".to_string());
+                        self.show_top_notice(format!("{name} reconectou!"));
+                    }
+                    self.multiplayer.reconnect_was_running = false;
+                } else if self.multiplayer.role == MultiplayerRole::Host {
                     let hello = NetMsg::Hello {
                         name: self.multiplayer.name_input.trim().to_string(),
                     };
@@ -1247,24 +1319,39 @@ impl App {
                     }
                 });
                 self.multiplayer.peer_id = None;
+                let saved_addr = self.multiplayer.network.as_ref().and_then(|n| n.peer_addr);
                 if let Some(net) = self.multiplayer.network.as_mut() {
                     net.peer_addr = None;
                 }
 
                 if self.multiplayer.role == MultiplayerRole::Host && self.screen == Screen::Game {
-                    // Host stays in game, peer is gone
-                    self.multiplayer.peer_disconnected_in_game = true;
                     self.multiplayer.active = false;
                     self.multiplayer.peer_name = None;
                     self.multiplayer.cursors.clear();
-                    self.multiplayer.status = ConnectionStatus::Ready;
-                    self.multiplayer.last_info = Some(if self.dev_mode {
-                        format!("jogador saiu: {peer}")
-                    } else {
-                        "jogador saiu da sala.".to_string()
-                    });
                     self.multiplayer.last_error = None;
-                    self.show_top_notice(format!("{disconnected_name} desconectou."));
+
+                    if let Some(addr) = saved_addr {
+                        self.multiplayer.reconnecting = true;
+                        self.multiplayer.reconnect_until =
+                            Some(Instant::now() + Duration::from_secs(30));
+                        self.multiplayer.reconnect_peer_addr = Some(addr);
+                        self.multiplayer.reconnect_last_attempt = Some(Instant::now());
+                        self.multiplayer.reconnect_was_running = self.game.running;
+                        self.multiplayer.status = ConnectionStatus::Connecting;
+                        self.game.running = false;
+                        if let Some(net) = self.multiplayer.network.as_ref() {
+                            net.node.connect_peer(addr);
+                        }
+                    } else {
+                        self.multiplayer.peer_disconnected_in_game = true;
+                        self.multiplayer.status = ConnectionStatus::Ready;
+                        self.multiplayer.last_info = Some(if self.dev_mode {
+                            format!("jogador saiu: {peer}")
+                        } else {
+                            "jogador saiu da sala.".to_string()
+                        });
+                        self.show_top_notice(format!("{disconnected_name} desconectou."));
+                    }
                 } else {
                     self.multiplayer.active = false;
                     self.multiplayer.peer_name = None;
@@ -1305,24 +1392,39 @@ impl App {
                     }
                 });
                 self.multiplayer.peer_id = None;
+                let saved_addr = self.multiplayer.network.as_ref().and_then(|n| n.peer_addr);
                 if let Some(net) = self.multiplayer.network.as_mut() {
                     net.peer_addr = None;
                 }
 
                 if self.multiplayer.role == MultiplayerRole::Host && self.screen == Screen::Game {
-                    // Host stays in game, peer timed out
-                    self.multiplayer.peer_disconnected_in_game = true;
                     self.multiplayer.active = false;
                     self.multiplayer.peer_name = None;
                     self.multiplayer.cursors.clear();
-                    self.multiplayer.status = ConnectionStatus::Ready;
-                    self.multiplayer.last_info = Some(if self.dev_mode {
-                        format!("tempo esgotado {peer}")
-                    } else {
-                        "tempo esgotado.".to_string()
-                    });
                     self.multiplayer.last_error = None;
-                    self.show_top_notice(format!("{disconnected_name} desconectou (timeout)."));
+
+                    if let Some(addr) = saved_addr {
+                        self.multiplayer.reconnecting = true;
+                        self.multiplayer.reconnect_until =
+                            Some(Instant::now() + Duration::from_secs(30));
+                        self.multiplayer.reconnect_peer_addr = Some(addr);
+                        self.multiplayer.reconnect_last_attempt = Some(Instant::now());
+                        self.multiplayer.reconnect_was_running = self.game.running;
+                        self.multiplayer.status = ConnectionStatus::Connecting;
+                        self.game.running = false;
+                        if let Some(net) = self.multiplayer.network.as_ref() {
+                            net.node.connect_peer(addr);
+                        }
+                    } else {
+                        self.multiplayer.peer_disconnected_in_game = true;
+                        self.multiplayer.status = ConnectionStatus::Ready;
+                        self.multiplayer.last_info = Some(if self.dev_mode {
+                            format!("tempo esgotado {peer}")
+                        } else {
+                            "tempo esgotado.".to_string()
+                        });
+                        self.show_top_notice(format!("{disconnected_name} desconectou (timeout)."));
+                    }
                 } else {
                     self.multiplayer.active = false;
                     self.multiplayer.peer_name = None;
@@ -1973,6 +2075,7 @@ impl App {
             self.ui.anim_tick = self.ui.anim_tick.wrapping_add(1);
             self.tick_top_notice();
             self.poll_network_events();
+            self.tick_reconnect();
 
             if self.screen == Screen::Game {
                 self.update_multiplayer_cursors();

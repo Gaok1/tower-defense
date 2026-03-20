@@ -171,6 +171,57 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             );
         f.render_widget(banner, banner_rect);
     }
+
+    if app.screen == Screen::Game && app.multiplayer.reconnecting {
+        draw_reconnect_overlay(f, app, game_area);
+    }
+}
+
+fn draw_reconnect_overlay(f: &mut Frame, app: &App, area: Rect) {
+    let secs_left = app
+        .multiplayer
+        .reconnect_until
+        .and_then(|t| t.checked_duration_since(std::time::Instant::now()))
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let popup_w: u16 = 38;
+    let popup_h: u16 = 5;
+    let x = area.x + area.width.saturating_sub(popup_w) / 2;
+    let y = area.y + area.height.saturating_sub(popup_h) / 2;
+    let popup_rect = Rect::new(x, y, popup_w.min(area.width), popup_h.min(area.height));
+
+    f.render_widget(
+        Block::default().style(Style::default().bg(Color::Rgb(5, 5, 10))),
+        popup_rect,
+    );
+
+    let body = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Reconectando...  ",
+            Style::default().fg(warn()).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            format!("  {}s restantes", secs_left),
+            Style::default().fg(text_dim()),
+        )),
+        Line::from(""),
+    ];
+
+    let popup = Paragraph::new(body)
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(warn()))
+                .title(Span::styled(
+                    " Conexão ",
+                    Style::default().fg(warn()).add_modifier(Modifier::BOLD),
+                )),
+        );
+    f.render_widget(popup, popup_rect);
 }
 
 fn draw_wide(f: &mut Frame, app: &mut App, area: Rect) {

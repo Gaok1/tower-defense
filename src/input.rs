@@ -80,26 +80,30 @@ pub fn pump(app: &mut App) -> Result<()> {
                     KeyCode::Char('r') => app.refresh_load_menu(),
                     _ => {}
                 },
-                Screen::Game => match k.code {
-                    KeyCode::Esc | KeyCode::Char('q') => app.should_quit = true,
-                    KeyCode::Char(' ') => app.handle_button(ButtonId::StartPause),
-                    KeyCode::Char('r') => app.handle_button(ButtonId::StartWave),
-                    KeyCode::Char('b') => app.handle_button(ButtonId::Build),
-                    KeyCode::Char('u') => app.handle_button(ButtonId::Upgrade),
-                    KeyCode::Char('s') => app.handle_button(ButtonId::Sell),
-                    KeyCode::Char('f') => app.handle_button(ButtonId::Speed),
-                    KeyCode::Char('t') => app.cycle_selected_target_mode(),
-                    KeyCode::F(12) => app.toggle_dev_mode(),
-                    KeyCode::Char('1') => app.toggle_build_kind(TowerKind::Basic),
-                    KeyCode::Char('2') => app.toggle_build_kind(TowerKind::Sniper),
-                    KeyCode::Char('3') => app.toggle_build_kind(TowerKind::Rapid),
-                    KeyCode::Char('4') => app.toggle_build_kind(TowerKind::Cannon),
-                    KeyCode::Char('5') => app.toggle_build_kind(TowerKind::Tesla),
-                    KeyCode::Char('6') => app.toggle_build_kind(TowerKind::Frost),
-                    KeyCode::Char('+') | KeyCode::Char('=') => app.cycle_zoom(1),
-                    KeyCode::Char('-') => app.cycle_zoom(-1),
-                    _ => {}
-                },
+                Screen::Game => {
+                    if !app.multiplayer.reconnecting {
+                        match k.code {
+                            KeyCode::Esc | KeyCode::Char('q') => app.should_quit = true,
+                            KeyCode::Char(' ') => app.handle_button(ButtonId::StartPause),
+                            KeyCode::Char('r') => app.handle_button(ButtonId::StartWave),
+                            KeyCode::Char('b') => app.handle_button(ButtonId::Build),
+                            KeyCode::Char('u') => app.handle_button(ButtonId::Upgrade),
+                            KeyCode::Char('s') => app.handle_button(ButtonId::Sell),
+                            KeyCode::Char('f') => app.handle_button(ButtonId::Speed),
+                            KeyCode::Char('t') => app.cycle_selected_target_mode(),
+                            KeyCode::F(12) => app.toggle_dev_mode(),
+                            KeyCode::Char('1') => app.toggle_build_kind(TowerKind::Basic),
+                            KeyCode::Char('2') => app.toggle_build_kind(TowerKind::Sniper),
+                            KeyCode::Char('3') => app.toggle_build_kind(TowerKind::Rapid),
+                            KeyCode::Char('4') => app.toggle_build_kind(TowerKind::Cannon),
+                            KeyCode::Char('5') => app.toggle_build_kind(TowerKind::Tesla),
+                            KeyCode::Char('6') => app.toggle_build_kind(TowerKind::Frost),
+                            KeyCode::Char('+') | KeyCode::Char('=') => app.cycle_zoom(1),
+                            KeyCode::Char('-') => app.cycle_zoom(-1),
+                            _ => {}
+                        }
+                    }
+                }
             }
         }
         Event::Resize(_, _) => { /* draw recalcula tudo */ }
@@ -171,7 +175,7 @@ pub fn pump(app: &mut App) -> Result<()> {
                             MapSelectAction::Start => app.start_selected_map(),
                         }
                     }
-                } else if app.screen == Screen::Game {
+                } else if app.screen == Screen::Game && !app.multiplayer.reconnecting {
                     if let Some(btn) = hit_test_button(app, m.column, m.row) {
                         app.handle_button(btn);
                     } else if let Some(act) = hit_test_action(app, m.column, m.row) {
@@ -234,13 +238,13 @@ pub fn pump(app: &mut App) -> Result<()> {
                 }
             }
             MouseEventKind::Down(MouseButton::Right) => {
-                if app.screen == Screen::Game && map_cell_at(app, m.column, m.row).is_some() {
+                if app.screen == Screen::Game && !app.multiplayer.reconnecting && map_cell_at(app, m.column, m.row).is_some() {
                     app.ui.drag_origin = Some((m.column, m.row));
                     app.ui.drag_view = Some((app.ui.viewport.view_x, app.ui.viewport.view_y));
                 }
             }
             MouseEventKind::Drag(MouseButton::Right) => {
-                if app.screen == Screen::Game {
+                if app.screen == Screen::Game && !app.multiplayer.reconnecting {
                     if let (Some((ox, oy)), Some((vx, vy))) = (app.ui.drag_origin, app.ui.drag_view)
                     {
                         let vp = app.ui.viewport;
@@ -261,25 +265,25 @@ pub fn pump(app: &mut App) -> Result<()> {
                 app.ui.drag_view = None;
             }
             MouseEventKind::ScrollUp => {
-                if app.screen == Screen::Game && map_cell_at(app, m.column, m.row).is_some() {
+                if app.screen == Screen::Game && !app.multiplayer.reconnecting && map_cell_at(app, m.column, m.row).is_some() {
                     app.cycle_zoom(1);
                 }
             }
             MouseEventKind::ScrollDown => {
-                if app.screen == Screen::Game && map_cell_at(app, m.column, m.row).is_some() {
+                if app.screen == Screen::Game && !app.multiplayer.reconnecting && map_cell_at(app, m.column, m.row).is_some() {
                     app.cycle_zoom(-1);
                 }
             }
 
             // (Opcional) pan com botão do meio também:
             MouseEventKind::Down(MouseButton::Middle) => {
-                if app.screen == Screen::Game && map_cell_at(app, m.column, m.row).is_some() {
+                if app.screen == Screen::Game && !app.multiplayer.reconnecting && map_cell_at(app, m.column, m.row).is_some() {
                     app.ui.drag_origin = Some((m.column, m.row));
                     app.ui.drag_view = Some((app.ui.viewport.view_x, app.ui.viewport.view_y));
                 }
             }
             MouseEventKind::Drag(MouseButton::Middle) => {
-                if app.screen == Screen::Game {
+                if app.screen == Screen::Game && !app.multiplayer.reconnecting {
                     if let (Some((ox, oy)), Some((vx, vy))) = (app.ui.drag_origin, app.ui.drag_view)
                     {
                         let vp = app.ui.viewport;
