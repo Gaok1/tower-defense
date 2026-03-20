@@ -3173,8 +3173,22 @@ impl App {
         None
     }
 
+    pub fn tower_footprint(kind: TowerKind) -> (u16, u16) {
+        match kind {
+            TowerKind::Basic  => (1, 1),
+            TowerKind::Sniper => (1, 1),
+            TowerKind::Rapid  => (2, 1),
+            TowerKind::Cannon => (2, 2),
+            TowerKind::Tesla  => (1, 1),
+            TowerKind::Frost  => (2, 2),
+        }
+    }
+
     pub fn tower_index_at(&self, x: u16, y: u16) -> Option<usize> {
-        self.game.towers.iter().position(|t| t.x == x && t.y == y)
+        self.game.towers.iter().position(|t| {
+            let (fw, fh) = Self::tower_footprint(t.kind);
+            x >= t.x && x < t.x + fw && y >= t.y && y < t.y + fh
+        })
     }
 
     pub fn selected_tower(&self) -> Option<&Tower> {
@@ -3460,11 +3474,21 @@ impl App {
     }
 
     pub fn can_build_at(&self, x: u16, y: u16, kind: TowerKind) -> bool {
-        if self.is_path(x, y) {
-            return false;
-        }
-        if self.tower_index_at(x, y).is_some() {
-            return false;
+        let (fw, fh) = Self::tower_footprint(kind);
+        for dy in 0..fh {
+            for dx in 0..fw {
+                let cx = x + dx;
+                let cy = y + dy;
+                if self.is_path(cx, cy) {
+                    return false;
+                }
+                if self.game.towers.iter().any(|t| {
+                    let (tw, th) = Self::tower_footprint(t.kind);
+                    cx >= t.x && cx < t.x + tw && cy >= t.y && cy < t.y + th
+                }) {
+                    return false;
+                }
+            }
         }
         self.dev_mode || self.game.money >= Self::tower_cost(kind, self.game.wave)
     }

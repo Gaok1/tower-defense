@@ -1163,136 +1163,413 @@ fn draw_tower_anim(
     }
 
     match t.kind {
-        // ── RAPID ─────────────────────────────────────────────────────────────
-        TowerKind::Rapid => {
-            // Rotating barrel rows: 4 phases cycling through ╦/┬/╩/┴
-            let phase = if fire_age > 0 {
-                (anim_tick / 1) % 4
-            } else {
-                (anim_tick / 3) % 4
-            };
-            let (top_sym, bot_sym) = match phase {
-                0 => ("╦", "╩"),
-                1 => ("┬", "┴"),
-                2 => ("╩", "╦"),
-                _ => ("┴", "┬"),
-            };
-            let (col_start, col_end, row_top, row_bot) = match zoom {
-                1 => (1, 3, 0, 1),
-                2 => (1, 7, 1, 2),
-                3 => (1, 10, 1, 2),
-                _ => (1, 13, 1, 2),
-            };
-            let fg = if fire_age > 6 { Color::White } else { base_style.fg.unwrap_or(Color::White) };
-            let st_top = Style::default().fg(fg).bg(hl_bg).add_modifier(Modifier::BOLD);
-            let st_bot = Style::default().fg(fg).bg(hl_bg);
-            for dx in col_start..col_end.min(tile_w) {
-                set_cell(buf, area, tile_x + dx, tile_y + row_top, top_sym, st_top);
-                if row_bot < tile_h {
-                    set_cell(buf, area, tile_x + dx, tile_y + row_bot, bot_sym, st_bot);
+        // ── BASIC — Sentry Pod ────────────────────────────────────────────────
+        TowerKind::Basic => {
+            let cy = tile_h / 2;
+            let cx = tile_x + tile_w / 2;
+
+            if fire_age == 0 {
+                // Idle: sensor ◉ pisca Cyan/White; lados pulsam ═/─
+                let sensor_phase = (anim_tick / 6) % 2;
+                let sensor_fg = if sensor_phase == 0 { Color::Cyan } else { Color::White };
+                let sensor_st = Style::default().fg(sensor_fg).bg(hl_bg).add_modifier(Modifier::BOLD);
+                // sensor no centro
+                if tile_w >= 2 {
+                    set_cell(buf, area, cx, tile_y + cy, "◉", sensor_st);
                 }
-            }
-            // Sparks above tile when firing
-            if fire_age >= 8 && tile_y > area.y {
-                let spark_st = Style::default().fg(Color::Yellow).bg(hl_bg).add_modifier(Modifier::BOLD);
-                let base_x = tile_x + (anim_tick ^ t.x as u32) as u16 % tile_w.max(1);
-                set_cell(buf, area, base_x, tile_y - 1, "▪", spark_st);
-                if base_x + 1 < tile_x + tile_w {
-                    set_cell(buf, area, base_x + 1, tile_y - 1, "·", spark_st);
+                // lados pulsam
+                let side_phase = (anim_tick / 10) % 2;
+                let side_sym = if side_phase == 0 { "═" } else { "─" };
+                let side_st = Style::default().fg(Color::Cyan).bg(hl_bg);
+                if tile_w >= 2 {
+                    set_cell(buf, area, tile_x, tile_y + cy, side_sym, side_st);
+                    set_cell(buf, area, tile_x + tile_w - 1, tile_y + cy, side_sym, side_st);
+                }
+            } else {
+                // Fire: flash central + extensão direcional
+                let (center_sym, center_mods) = if fire_age >= 5 {
+                    ("╋", Modifier::BOLD)
+                } else if fire_age >= 2 {
+                    ("┼", Modifier::empty())
+                } else {
+                    ("·", Modifier::empty())
+                };
+                let center_fg = if fire_age >= 5 { Color::White } else { Color::Cyan };
+                let cst = Style::default().fg(center_fg).bg(hl_bg).add_modifier(center_mods);
+                set_cell(buf, area, cx, tile_y + cy, center_sym, cst);
+
+                // Extensão direcional fora do tile
+                let ext_st = Style::default().fg(Color::White).bg(hl_bg).add_modifier(Modifier::BOLD);
+                let (dx, dy) = t.fire_dir;
+                let ext_sym = match (dx, dy) {
+                    (1, 0) | (-1, 0) => "━",
+                    (0, 1) | (0, -1) => "┃",
+                    (1, 1) | (-1, -1) => "╲",
+                    _ => "╱",
+                };
+                let ex = tile_x as i16 + dx * tile_w as i16;
+                let ey = tile_y as i16 + cy as i16 + dy;
+                if ex >= area.x as i16 && ey >= area.y as i16
+                    && ex < area.right() as i16 && ey < area.bottom() as i16
+                {
+                    set_cell(buf, area, ex as u16, ey as u16, ext_sym, ext_st);
+                    // segundo passo do feixe
+                    let ex2 = ex + dx;
+                    let ey2 = ey + dy;
+                    if ex2 >= area.x as i16 && ey2 >= area.y as i16
+                        && ex2 < area.right() as i16 && ey2 < area.bottom() as i16
+                    {
+                        let ext2_st = Style::default().fg(Color::Cyan).bg(hl_bg).add_modifier(Modifier::DIM);
+                        set_cell(buf, area, ex2 as u16, ey2 as u16, ext_sym, ext2_st);
+                    }
+                }
+
+                // Ejeção de casings quando fire_age alto
+                if fire_age >= 7 && tile_y > area.y {
+                    let casing_st = Style::default().fg(Color::Yellow).bg(hl_bg).add_modifier(Modifier::BOLD);
+                    let opp_x = tile_x as i16 - dx * tile_w as i16;
+                    let opp_y = tile_y as i16 - 1;
+                    if opp_x >= area.x as i16 && opp_x < area.right() as i16
+                        && opp_y >= area.y as i16 && opp_y < area.bottom() as i16
+                    {
+                        set_cell(buf, area, opp_x as u16, opp_y as u16, "▪", casing_st);
+                    }
                 }
             }
         }
 
-        // ── TESLA ─────────────────────────────────────────────────────────────
-        TowerKind::Tesla => {
-            // Bobina cells that crackle individually
-            let coil_cells: &[(u16, u16)] = match zoom {
-                2 => &[(3, 1), (2, 2), (3, 2), (4, 2), (3, 3), (2, 4), (3, 4), (4, 4)],
-                3 | 4 => &[
-                    (1, 1), (2, 1), (3, 1), (4, 1),
-                    (1, 2), (2, 2), (3, 2), (4, 2),
-                    (1, 3), (2, 3), (3, 3), (4, 3),
-                    (1, 4), (2, 4), (3, 4), (4, 4),
-                    (1, 5), (2, 5), (3, 5), (4, 5),
-                ],
-                _ => &[(1, 1), (2, 1), (1, 2), (2, 2)],
+        // ── SNIPER — Rail Spire ───────────────────────────────────────────────
+        TowerKind::Sniper => {
+            // Idle: apex alterna ▲/△; anéis de carga animam subindo
+            if fire_age == 0 {
+                // Apex pulsa
+                let apex_glyph = if (anim_tick / 3) % 2 == 0 { "▲" } else { "△" };
+                let apex_fg = if (anim_tick / 6) % 2 == 0 { Color::Cyan } else { Color::LightCyan };
+                let apex_st = Style::default().fg(apex_fg).bg(hl_bg).add_modifier(Modifier::BOLD);
+                let apex_col = tile_w / 2;
+                if apex_col < tile_w {
+                    set_cell(buf, area, tile_x + apex_col, tile_y, apex_glyph, apex_st);
+                    if apex_col + 1 < tile_w {
+                        set_cell(buf, area, tile_x + apex_col + 1, tile_y, apex_glyph, apex_st);
+                    }
+                }
+
+                // Anéis pulsando (energia subindo pelo column)
+                let ring_rows: &[u16] = match zoom {
+                    1 => &[1],
+                    2 => &[2, 4],
+                    3 => &[2, 4, 6],
+                    _ => &[2, 4, 6, 8],
+                };
+                for &ry in ring_rows {
+                    if ry >= tile_h { continue; }
+                    // cada anel tem fase deslocada — efeito de subida
+                    let ring_phase = (anim_tick.wrapping_add(ry as u32 * 5)) % 12;
+                    let (sym, fg) = if ring_phase < 2 {
+                        ("═", Color::White)
+                    } else if ring_phase < 5 {
+                        ("═", Color::LightCyan)
+                    } else {
+                        ("─", Color::Cyan)
+                    };
+                    let ring_st = Style::default().fg(fg).bg(hl_bg);
+                    for dx in 0..tile_w {
+                        set_cell(buf, area, tile_x + dx, tile_y + ry, sym, ring_st);
+                    }
+                }
+            } else {
+                // Fire: coluna inteira pisca branco (fire_age >= 8), depois esfria
+                let (col_fg, col_mods) = if fire_age >= 8 {
+                    (Color::White, Modifier::BOLD)
+                } else if fire_age >= 4 {
+                    (Color::LightCyan, Modifier::BOLD)
+                } else {
+                    (Color::Cyan, Modifier::DIM)
+                };
+                let col_st = Style::default().fg(col_fg).bg(hl_bg).add_modifier(col_mods);
+                // coluna central
+                let col_x = tile_x + tile_w / 2;
+                for dy in 0..tile_h {
+                    set_cell(buf, area, col_x, tile_y + dy, "║", col_st);
+                }
+
+                // Feixe longo na direção fire_dir (3-4 células fora do tile)
+                if fire_age >= 4 {
+                    let ext_st = Style::default().fg(Color::White).bg(hl_bg).add_modifier(Modifier::BOLD);
+                    let ext2_st = Style::default().fg(Color::LightCyan).bg(hl_bg);
+                    let (dx, dy) = t.fire_dir;
+                    let beam_sym = match (dx, dy) {
+                        (1, 0) | (-1, 0) => "━",
+                        (0, 1) | (0, -1) => "┃",
+                        _ => "╱",
+                    };
+                    for step in 1i16..=4 {
+                        let bx = col_x as i16 + dx * step;
+                        let by = tile_y as i16 + tile_h as i16 / 2 + dy * step;
+                        if bx >= area.x as i16 && by >= area.y as i16
+                            && bx < area.right() as i16 && by < area.bottom() as i16
+                        {
+                            let st = if step <= 2 { ext_st } else { ext2_st };
+                            set_cell(buf, area, bx as u16, by as u16, beam_sym, st);
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── RAPID — Vulcan Array ──────────────────────────────────────────────
+        TowerKind::Rapid => {
+            // Barrel ● sequência: um acende por vez (idle lento, fire rápido)
+            let barrel_count: u16 = match zoom {
+                1 => 3,
+                2 => 5,
+                3 => 7,
+                _ => 9,
+            };
+            let speed = if fire_age > 0 { 1u32 } else { 4 };
+            let lit = (anim_tick / speed) % barrel_count as u32;
+            let fg = if fire_age > 6 { Color::White } else { base_style.fg.unwrap_or(Color::White) };
+            let spacing: u16 = match zoom {
+                1 => 2,
+                2 => 3,
+                3 => 3,
+                _ => 3,
+            };
+            // Fire: todos ● branco bold
+            let (all_lit, all_mods) = if fire_age > 0 {
+                (true, Modifier::BOLD)
+            } else {
+                (false, Modifier::empty())
             };
 
-            for &(sx, sy) in coil_cells {
-                if sx >= tile_w || sy >= tile_h {
-                    continue;
-                }
-                let (glyph, st) = if fire_age > 0 {
-                    let st = Style::default().fg(Color::White).bg(hl_bg).add_modifier(Modifier::BOLD);
-                    ("╋", st)
+            for i in 0..barrel_count {
+                let bx = tile_x + 1 + i * spacing;
+                let by = tile_y + 1;
+                let (sym, mods) = if all_lit || i as u32 == lit {
+                    ("●", Modifier::BOLD)
                 } else {
-                    let cell_offset = (sx as u32).wrapping_mul(3).wrapping_add(sy as u32 * 7);
-                    let phase = (anim_tick.wrapping_add(cell_offset)) % 8;
-                    let (glyph, fg, mods) = match phase {
-                        2 => ("╋", Color::White, Modifier::BOLD),
-                        5 => ("╫", Color::Cyan, Modifier::DIM),
-                        _ => ("╬", Color::Cyan, Modifier::BOLD),
+                    ("○", all_mods)
+                };
+                let st = Style::default().fg(fg).bg(hl_bg).add_modifier(mods);
+                set_cell(buf, area, bx, by, sym, st);
+                if by + 1 < tile_y + tile_h {
+                    set_cell(buf, area, bx, by + 1, sym, st);
+                }
+            }
+
+            // Sparks acima e abaixo quando firing
+            if fire_age >= 6 {
+                let spark_st = Style::default().fg(Color::Yellow).bg(hl_bg).add_modifier(Modifier::BOLD);
+                // acima
+                if tile_y > area.y {
+                    for i in 0..barrel_count {
+                        let bx = tile_x + 1 + i * spacing;
+                        // alterna quais barrels emitem spark
+                        if (i as u32 + anim_tick) % 3 == 0 {
+                            set_cell(buf, area, bx, tile_y - 1, "▪", spark_st);
+                        }
+                    }
+                }
+                // casings para baixo
+                if tile_y + tile_h < area.bottom() {
+                    let base_x = tile_x + (anim_tick ^ t.x as u32) as u16 % tile_w.max(1);
+                    set_cell(buf, area, base_x, tile_y + tile_h, "▪", spark_st);
+                }
+            }
+        }
+
+        // ── CANNON — Siege Mortar ─────────────────────────────────────────────
+        TowerKind::Cannon => {
+            let base_fg = base_style.fg.unwrap_or(Color::White);
+
+            if fire_age == 0 {
+                // Idle: flancos ◉/◎ pulsam; fumaça leve acima
+                let cap_glyph = if (anim_tick / 10) % 2 == 0 { "◉" } else { "◎" };
+                let cap_st = Style::default().fg(base_fg).bg(hl_bg).add_modifier(Modifier::BOLD);
+                // canto superior esquerdo e direito
+                set_cell(buf, area, tile_x + 1, tile_y + 2, cap_glyph, cap_st);
+                set_cell(buf, area, tile_x + tile_w - 2, tile_y + 2, cap_glyph, cap_st);
+                // fumaça leve idle (vapor)
+                if tile_y > area.y && (anim_tick / 15) % 3 != 0 {
+                    let vapor_st = Style::default().fg(Color::DarkGray).bg(hl_bg);
+                    let vx = tile_x + tile_w / 2 + (anim_tick / 8) as u16 % 3;
+                    if vx < tile_x + tile_w {
+                        set_cell(buf, area, vx, tile_y - 1, "·", vapor_st);
+                    }
+                }
+            } else {
+                // Fire: flancos branco bold
+                let cap_st = Style::default().fg(Color::White).bg(hl_bg).add_modifier(Modifier::BOLD);
+                set_cell(buf, area, tile_x + 1, tile_y + 2, "◉", cap_st);
+                set_cell(buf, area, tile_x + tile_w - 2, tile_y + 2, "◉", cap_st);
+
+                // Recoil: apaga linha 0 e 1, redraws shifted
+                if fire_age >= 7 {
+                    let erase_st = Style::default().bg(hl_bg);
+                    for dx in 0..tile_w {
+                        if let Some(cell) = buf.cell_mut((tile_x + dx, tile_y)) {
+                            cell.set_symbol(" ").set_style(erase_st);
+                        }
+                    }
+                    if tile_h > 1 {
+                        let barrel_st = Style::default().fg(Color::White).bg(hl_bg).add_modifier(Modifier::BOLD);
+                        set_cell(buf, area, tile_x, tile_y + 1, "◉", barrel_st);
+                        set_cell(buf, area, tile_x + tile_w - 1, tile_y + 1, "◉", barrel_st);
+                        for dx in 1..tile_w.saturating_sub(1) {
+                            set_cell(buf, area, tile_x + dx, tile_y + 1, "═", barrel_st);
+                        }
+                    }
+                } else if fire_age >= 4 {
+                    let dim_st = Style::default().fg(base_fg).bg(hl_bg).add_modifier(Modifier::DIM);
+                    set_cell(buf, area, tile_x, tile_y, "◉", dim_st);
+                    set_cell(buf, area, tile_x + tile_w - 1, tile_y, "◉", dim_st);
+                }
+
+                // Fumaça massiva acima
+                if fire_age >= 5 && tile_y > area.y {
+                    let s1 = Style::default().fg(Color::White).bg(hl_bg);
+                    let s2 = Style::default().fg(Color::DarkGray).bg(hl_bg);
+                    let s3 = Style::default().fg(Color::DarkGray).bg(hl_bg).add_modifier(Modifier::DIM);
+                    let smoke_sym = match fire_age {
+                        9..=u8::MAX => "▓",
+                        7..=8 => "▒",
+                        _ => "░",
+                    };
+                    // linha -1
+                    set_cell(buf, area, tile_x + tile_w / 4, tile_y - 1, smoke_sym, s2);
+                    set_cell(buf, area, tile_x + tile_w / 2, tile_y - 1, smoke_sym, s1);
+                    set_cell(buf, area, tile_x + 3 * tile_w / 4, tile_y - 1, smoke_sym, s2);
+                    // linha -2
+                    if tile_y >= area.y + 2 && fire_age >= 7 {
+                        set_cell(buf, area, tile_x + tile_w / 3, tile_y - 2, "░", s3);
+                        set_cell(buf, area, tile_x + tile_w / 2, tile_y - 2, "▒", s2);
+                    }
+                }
+
+                // Onda de choque expandindo
+                if fire_age >= 3 && fire_age <= 7 {
+                    let radius = (10 - fire_age) as u16 / 2;
+                    let cx = tile_x + tile_w / 2;
+                    let cy = tile_y + tile_h / 2;
+                    let ring_st = Style::default().fg(Color::Yellow).bg(hl_bg);
+                    // 4 pontos cardiais do ring
+                    let pts: [(i16, i16); 4] = [(0, -(radius as i16)), (0, radius as i16), (-(radius as i16), 0), (radius as i16, 0)];
+                    for (ox, oy) in pts {
+                        let rx = cx as i16 + ox;
+                        let ry = cy as i16 + oy;
+                        if rx >= area.x as i16 && ry >= area.y as i16
+                            && rx < area.right() as i16 && ry < area.bottom() as i16
+                        {
+                            set_cell(buf, area, rx as u16, ry as u16, "○", ring_st);
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── TESLA — Tesla Coil ────────────────────────────────────────────────
+        TowerKind::Tesla => {
+            // Células da bobina (anéis de espiras)
+            let coil_rows: &[u16] = match zoom {
+                1 => &[1],
+                2 => &[2, 3, 4],
+                3 => &[3, 4, 5, 6],
+                _ => &[4, 5, 6, 7, 8],
+            };
+
+            for &ry in coil_rows {
+                if ry >= tile_h { continue; }
+                for dx in 0..tile_w {
+                    let cell_offset = dx as u32 * 3 + ry as u32 * 7;
+                    let (glyph, fg, mods) = if fire_age > 0 {
+                        ("╋", Color::White, Modifier::BOLD)
+                    } else {
+                        let phase = (anim_tick.wrapping_add(cell_offset)) % 8;
+                        match phase {
+                            2 => ("╋", Color::White, Modifier::BOLD),
+                            5 => ("╫", Color::Cyan, Modifier::DIM),
+                            _ => ("╬", Color::Cyan, Modifier::BOLD),
+                        }
                     };
                     let st = Style::default().fg(fg).bg(hl_bg).add_modifier(mods);
-                    (glyph, st)
-                };
-                set_cell(buf, area, tile_x + sx, tile_y + sy, glyph, st);
-            }
-
-            // Tip cells (▲/△)
-            let tip_cells: &[(u16, u16)] = match zoom {
-                2 => &[(3, 0), (4, 0)],
-                3 | 4 => &[(2, 0), (3, 0), (4, 0), (5, 0)],
-                _ => &[(1, 0), (2, 0)],
-            };
-            let tip_glyph = if fire_age > 0 {
-                "△"
-            } else if (anim_tick / 2) % 2 == 0 {
-                "▲"
-            } else {
-                "△"
-            };
-            let tip_st = Style::default()
-                .fg(if fire_age > 0 { Color::White } else { Color::Cyan })
-                .bg(hl_bg)
-                .add_modifier(Modifier::BOLD);
-            for &(sx, sy) in tip_cells {
-                if sx < tile_w && sy < tile_h {
-                    set_cell(buf, area, tile_x + sx, tile_y + sy, tip_glyph, tip_st);
+                    set_cell(buf, area, tile_x + dx, tile_y + ry, glyph, st);
                 }
             }
 
-            // Discharge sparks outside tile when firing
+            // Esfera no topo: pulsa ●/◉/○
+            let sphere_cols: &[u16] = match zoom {
+                1 => &[1, 2],
+                2 => &[2, 3, 4, 5],
+                3 => &[3, 4, 5, 6, 7, 8],
+                _ => &[4, 5, 6, 7, 8, 9, 10, 11],
+            };
+            let sphere_rows: &[u16] = match zoom {
+                1 => &[0],
+                2 => &[0, 1],
+                3 => &[0, 1, 2],
+                _ => &[0, 1, 2, 3],
+            };
+            let sphere_phase = (anim_tick / 3) % 3;
+            let (sphere_glyph, sphere_fg) = if fire_age > 0 {
+                ("●", Color::White)
+            } else {
+                match sphere_phase {
+                    0 => ("●", Color::LightCyan),
+                    1 => ("◉", Color::Cyan),
+                    _ => ("○", Color::Cyan),
+                }
+            };
+            let sphere_st = Style::default()
+                .fg(sphere_fg)
+                .bg(hl_bg)
+                .add_modifier(Modifier::BOLD);
+            for &ry in sphere_rows {
+                for &cx in sphere_cols {
+                    if cx < tile_w && ry < tile_h {
+                        set_cell(buf, area, tile_x + cx, tile_y + ry, sphere_glyph, sphere_st);
+                    }
+                }
+            }
+
+            // Descargas em 8 direções quando firing
             if fire_age > 0 {
                 let cx = tile_x + tile_w / 2;
                 let cy = tile_y + tile_h / 2;
-                let spark_sym = if fire_age > 2 { "*" } else { "·" };
+                let spark_sym = if fire_age > 4 { "*" } else { "·" };
+                let arc_sym = if fire_age > 6 { "╋" } else { "╬" };
                 let spark_st = Style::default().fg(Color::Cyan).bg(hl_bg).add_modifier(Modifier::BOLD);
-                if cy > area.y { set_cell(buf, area, cx, cy - 1, spark_sym, spark_st); }
-                if cy + 1 < area.bottom() { set_cell(buf, area, cx, cy + 1, spark_sym, spark_st); }
-                if cx > area.x { set_cell(buf, area, cx - 1, cy, spark_sym, spark_st); }
-                if cx + 1 < area.right() { set_cell(buf, area, cx + 1, cy, spark_sym, spark_st); }
+                let arc_st = Style::default().fg(Color::White).bg(hl_bg).add_modifier(Modifier::BOLD);
+                // 4 cardinais
+                let dirs: [(i16, i16); 8] = [(0,-1),(0,1),(-1,0),(1,0),(-1,-1),(1,-1),(-1,1),(1,1)];
+                for (i, (ox, oy)) in dirs.iter().enumerate() {
+                    let px = cx as i16 + ox;
+                    let py = cy as i16 + oy;
+                    if px >= area.x as i16 && py >= area.y as i16
+                        && px < area.right() as i16 && py < area.bottom() as i16
+                    {
+                        let sym = if i < 4 { arc_sym } else { spark_sym };
+                        let st = if i < 4 { arc_st } else { spark_st };
+                        set_cell(buf, area, px as u16, py as u16, sym, st);
+                    }
+                }
+                // arcos para célula vizinha (2 passos)
+                if fire_age >= 6 {
+                    for (ox, oy) in &[(0i16,-2i16),(0,2),(-2,0),(2,0)] {
+                        let px = cx as i16 + ox;
+                        let py = cy as i16 + oy;
+                        if px >= area.x as i16 && py >= area.y as i16
+                            && px < area.right() as i16 && py < area.bottom() as i16
+                        {
+                            let far_st = Style::default().fg(Color::Cyan).bg(hl_bg).add_modifier(Modifier::DIM);
+                            set_cell(buf, area, px as u16, py as u16, "╫", far_st);
+                        }
+                    }
+                }
             }
         }
 
-        // ── FROST ─────────────────────────────────────────────────────────────
+        // ── FROST — Cryo Emitter ──────────────────────────────────────────────
         TowerKind::Frost => {
-            // Tip cells pulse in a crystalline breathing rhythm
-            let tip_phase = (anim_tick / 5) % 4;
-            let tip_sym = match tip_phase {
-                0 => "▲",
-                1 => "*",
-                2 => "✦",
-                _ => "*",
-            };
-            let bot_sym = match tip_phase {
-                0 => "▼",
-                1 => "*",
-                2 => "✦",
-                _ => "*",
-            };
-
-            // Core color pulsing
             let core_phase = (anim_tick / 4) % 2;
             let core_fg = if fire_age > 4 {
                 Color::White
@@ -1301,219 +1578,87 @@ fn draw_tower_anim(
             } else {
                 Color::Cyan
             };
-            let core_sym = if fire_age > 4 { "✦" } else { "◆" };
-            let core_mods = Modifier::BOLD;
 
-            // Tip positions by zoom
-            let (top_tip_cells, bot_tip_cells, core_cells): (&[(u16, u16)], &[(u16, u16)], &[(u16, u16)]) = match zoom {
-                1 => (&[(1, 0)], &[(1, 3)], &[(1, 1), (1, 2)]),
-                2 => (&[(3, 0), (4, 0)], &[(3, 7), (4, 7)], &[(3, 3), (4, 3), (3, 4), (4, 4)]),
-                3 => (&[(4, 0), (5, 0)], &[(4, 11), (5, 11)], &[(4, 5), (5, 5), (4, 6), (5, 6)]),
-                _ => (&[(5, 0), (6, 0)], &[(5, 15), (6, 15)], &[(5, 7), (6, 7), (5, 8), (6, 8)]),
+            // Anel externo (◎/○) pulsa Cyan/LightCyan
+            let ring_phase = (anim_tick / 8) % 2;
+            let ring_fg = if fire_age > 0 {
+                Color::White
+            } else if ring_phase == 0 {
+                Color::Cyan
+            } else {
+                Color::LightCyan
             };
+            let ring_st = Style::default().fg(ring_fg).bg(hl_bg);
+            // borda do tile (linha superior e inferior)
+            for dx in 0..tile_w {
+                set_cell(buf, area, tile_x + dx, tile_y, "◎", ring_st);
+                if tile_h > 1 {
+                    set_cell(buf, area, tile_x + dx, tile_y + tile_h - 1, "◎", ring_st);
+                }
+            }
+            for dy in 1..tile_h.saturating_sub(1) {
+                set_cell(buf, area, tile_x, tile_y + dy, "○", ring_st);
+                set_cell(buf, area, tile_x + tile_w - 1, tile_y + dy, "○", ring_st);
+            }
 
+            // Core central pulsa
+            let core_sym = if fire_age > 4 { "✦" } else { "●" };
+            let core_st = Style::default().fg(core_fg).bg(hl_bg).add_modifier(Modifier::BOLD);
+            let core_y = tile_y + tile_h / 2;
+            let core_x = tile_x + tile_w / 2;
+            set_cell(buf, area, core_x, core_y, core_sym, core_st);
+            if tile_w > 2 {
+                set_cell(buf, area, core_x - 1, core_y, core_sym, core_st);
+                set_cell(buf, area, core_x + 1, core_y, core_sym, core_st);
+            }
+
+            // Vapor cryo idle: partículas · sobem
             if fire_age == 0 {
-                let tip_st = Style::default()
-                    .fg(Color::Cyan)
-                    .bg(hl_bg)
-                    .add_modifier(Modifier::BOLD);
-                for &(sx, sy) in top_tip_cells {
-                    if sx < tile_w && sy < tile_h {
-                        set_cell(buf, area, tile_x + sx, tile_y + sy, tip_sym, tip_st);
-                    }
+                let vapor_st = Style::default().fg(Color::Cyan).bg(hl_bg).add_modifier(Modifier::DIM);
+                let offset = (anim_tick / 4) % tile_h as u32;
+                let vx1 = tile_x + tile_w / 4;
+                let vx2 = tile_x + 3 * tile_w / 4;
+                let vy = tile_y + (tile_h - 1).saturating_sub(offset as u16);
+                if vx1 < tile_x + tile_w && vy < tile_y + tile_h && vy >= tile_y + 1 {
+                    set_cell(buf, area, vx1, vy, "·", vapor_st);
                 }
-                for &(sx, sy) in bot_tip_cells {
-                    if sx < tile_w && sy < tile_h {
-                        set_cell(buf, area, tile_x + sx, tile_y + sy, bot_sym, tip_st);
-                    }
+                if vx2 < tile_x + tile_w && vy < tile_y + tile_h && vy >= tile_y + 1 {
+                    set_cell(buf, area, vx2, vy, "·", vapor_st);
                 }
             }
 
-            let core_st = Style::default().fg(core_fg).bg(hl_bg).add_modifier(core_mods);
-            for &(sx, sy) in core_cells {
-                if sx < tile_w && sy < tile_h {
-                    set_cell(buf, area, tile_x + sx, tile_y + sy, core_sym, core_st);
-                }
-            }
-
-            // Ice fragment ejection when firing
-            if fire_age >= 2 && fire_age <= 8 {
+            // Fire: fragmentos de gelo + anel pulsando para fora
+            if fire_age >= 2 && fire_age <= 9 {
                 let frag_sym = match fire_age {
-                    6..=8 => "◆",
-                    4..=5 => "◇",
+                    7..=9 => "◆",
+                    5..=6 => "◇",
                     _ => "·",
                 };
-                let frag_st = Style::default()
-                    .fg(Color::Cyan)
-                    .bg(hl_bg)
-                    .add_modifier(Modifier::BOLD);
-                let cx = tile_x + tile_w / 2;
-                let cy = tile_y + tile_h / 2;
-                if tile_y > area.y { set_cell(buf, area, cx, tile_y - 1, frag_sym, frag_st); }
-                if tile_y + tile_h < area.bottom() { set_cell(buf, area, cx, tile_y + tile_h, frag_sym, frag_st); }
-                if tile_x > area.x { set_cell(buf, area, tile_x - 1, cy, frag_sym, frag_st); }
-                if tile_x + tile_w < area.right() { set_cell(buf, area, tile_x + tile_w, cy, frag_sym, frag_st); }
-            }
-        }
-
-        // ── CANNON ────────────────────────────────────────────────────────────
-        TowerKind::Cannon => {
-            // Idle: ◉ cap pulse
-            let cap_glyph = if (anim_tick / 10) % 2 == 0 { "◉" } else { "◎" };
-            let cap_st = Style::default()
-                .fg(base_style.fg.unwrap_or(Color::White))
-                .bg(hl_bg)
-                .add_modifier(Modifier::BOLD);
-
-            if fire_age == 0 {
-                set_cell(buf, area, tile_x, tile_y, cap_glyph, cap_st);
-                if tile_w > 1 {
-                    set_cell(buf, area, tile_x + tile_w - 1, tile_y, cap_glyph, cap_st);
-                }
-            }
-
-            // Recoil: move barrel row down
-            if fire_age >= 7 {
-                // Erase row 0
-                let erase_st = Style::default().bg(hl_bg);
-                for dx in 0..tile_w {
-                    let x = tile_x + dx;
-                    let y = tile_y;
-                    if x < area.right() && y < area.bottom() {
-                        if let Some(cell) = buf.cell_mut((x, y)) {
-                            cell.set_symbol(" ").set_style(erase_st);
-                        }
+                let frag_fg = if fire_age >= 7 { Color::White } else { Color::Cyan };
+                let frag_st = Style::default().fg(frag_fg).bg(hl_bg).add_modifier(Modifier::BOLD);
+                // 4 direções cardinais, distância cresce com fire_age
+                let dist = ((10 - fire_age) / 2) as u16 + 1;
+                let pts = [
+                    (core_x, tile_y.saturating_sub(dist)),
+                    (core_x, tile_y + tile_h + dist - 1),
+                    (tile_x.saturating_sub(dist), core_y),
+                    (tile_x + tile_w + dist - 1, core_y),
+                ];
+                for (fx, fy) in pts {
+                    if fx >= area.x && fy >= area.y && fx < area.right() && fy < area.bottom() {
+                        set_cell(buf, area, fx, fy, frag_sym, frag_st);
                     }
                 }
-                // Redraw barrel in row 1
-                if tile_h > 1 {
-                    let barrel_st = Style::default()
-                        .fg(Color::White)
-                        .bg(hl_bg)
-                        .add_modifier(Modifier::BOLD);
-                    set_cell(buf, area, tile_x, tile_y + 1, "◉", barrel_st);
-                    if tile_w > 1 {
-                        set_cell(buf, area, tile_x + tile_w - 1, tile_y + 1, "◉", barrel_st);
-                    }
-                    for dx in 1..tile_w.saturating_sub(1) {
-                        set_cell(buf, area, tile_x + dx, tile_y + 1, "═", barrel_st);
-                    }
-                }
-            } else if fire_age >= 4 {
-                // Recovery: row 0 dim
-                let dim_st = Style::default()
-                    .fg(base_style.fg.unwrap_or(Color::White))
-                    .bg(hl_bg)
-                    .add_modifier(Modifier::DIM);
-                set_cell(buf, area, tile_x, tile_y, "◉", dim_st);
-                if tile_w > 1 {
-                    set_cell(buf, area, tile_x + tile_w - 1, tile_y, "◉", dim_st);
-                }
-            }
-
-            // Smoke above tile
-            if fire_age >= 6 && tile_y > area.y {
-                let smoke_st = Style::default().fg(Color::DarkGray).bg(hl_bg);
-                set_cell(buf, area, tile_x + (tile_w / 4).min(tile_w - 1), tile_y - 1, "▒", smoke_st);
-                let smoke_st2 = Style::default().fg(Color::White).bg(hl_bg);
-                set_cell(buf, area, tile_x + tile_w / 2, tile_y - 1, "▓", smoke_st2);
-                let smoke_st3 = Style::default().fg(Color::DarkGray).bg(hl_bg);
-                if tile_w >= 2 {
-                    set_cell(buf, area, tile_x + tile_w - 2, tile_y - 1, "░", smoke_st3);
-                }
-            }
-        }
-
-        // ── BASIC ─────────────────────────────────────────────────────────────
-        TowerKind::Basic => {
-            // Idle barrel pulse
-            let cy = tile_h / 2;
-            if fire_age == 0 {
-                let barrel_phase = (anim_tick / 8) % 2;
-                let bl = if barrel_phase == 0 { "▌" } else { "│" };
-                let br = if barrel_phase == 0 { "▐" } else { "│" };
-                let bst = Style::default()
-                    .fg(base_style.fg.unwrap_or(Color::White))
-                    .bg(hl_bg)
-                    .add_modifier(Modifier::BOLD);
-                if tile_w >= 2 && cy < tile_h {
-                    set_cell(buf, area, tile_x, tile_y + cy, bl, bst);
-                    set_cell(buf, area, tile_x + tile_w - 1, tile_y + cy, br, bst);
-                }
-            } else {
-                // Center flash
-                let (center_sym, center_mods) = if fire_age >= 5 {
-                    ("╋", Modifier::BOLD)
-                } else if fire_age >= 2 {
-                    ("┼", Modifier::empty())
-                } else {
-                    ("·", Modifier::empty())
-                };
-                let center_fg = if fire_age >= 5 { Color::White } else { base_style.fg.unwrap_or(Color::White) };
-                let cst = Style::default().fg(center_fg).bg(hl_bg).add_modifier(center_mods);
-                let cx = tile_x + tile_w / 2;
-                if cx < area.right() && tile_y + cy < area.bottom() {
-                    set_cell(buf, area, cx, tile_y + cy, center_sym, cst);
-                }
-
-                // Directional extension outside tile
+                // bordas do tile ficam frias (░ azul)
                 if fire_age >= 5 {
-                    let ext_st = Style::default()
-                        .fg(Color::White)
-                        .bg(hl_bg)
-                        .add_modifier(Modifier::BOLD);
-                    let (dx, dy) = t.fire_dir;
-                    let ext_sym = match (dx, dy) {
-                        (1, 0) | (-1, 0) => "━",
-                        (0, 1) | (0, -1) => "┃",
-                        (1, 1) | (-1, -1) => "╲",
-                        _ => "╱",
-                    };
-                    let ex = tile_x as i16 + dx * tile_w as i16;
-                    let ey = tile_y as i16 + cy as i16 + dy;
-                    if ex >= area.x as i16 && ey >= area.y as i16
-                        && ex < area.right() as i16 && ey < area.bottom() as i16
-                    {
-                        set_cell(buf, area, ex as u16, ey as u16, ext_sym, ext_st);
-                    }
-                }
-            }
-        }
-
-        // ── SNIPER ────────────────────────────────────────────────────────────
-        TowerKind::Sniper => {
-            // Barrel heat + extension on fire
-            if fire_age > 0 {
-                let (fg, mods) = if fire_age >= 4 {
-                    (Color::White, Modifier::BOLD)
-                } else {
-                    (Color::White, Modifier::DIM)
-                };
-                let row_st = Style::default().fg(fg).bg(hl_bg).add_modifier(mods);
-                // Highlight row 0 of the sprite
-                for dx in 0..tile_w {
-                    set_cell(buf, area, tile_x + dx, tile_y, "═", row_st);
-                }
-                set_cell(buf, area, tile_x, tile_y, "╞", row_st);
-                if tile_w > 0 { set_cell(buf, area, tile_x + tile_w - 1, tile_y, "╗", row_st); }
-
-                // Extend barrel to the right when firing hard
-                if fire_age >= 4 {
-                    let ext_st = Style::default()
-                        .fg(Color::Yellow)
-                        .bg(hl_bg)
-                        .add_modifier(Modifier::BOLD);
-                    let rx = tile_x + tile_w;
-                    if rx < area.right() {
-                        set_cell(buf, area, rx, tile_y, "━", ext_st);
-                    }
-                    if rx + 1 < area.right() {
-                        set_cell(buf, area, rx + 1, tile_y, "━", ext_st);
-                    }
-                    // Base stub to the left
-                    if tile_x > area.x {
-                        let base_st = Style::default().fg(Color::White).bg(hl_bg).add_modifier(Modifier::DIM);
-                        set_cell(buf, area, tile_x - 1, tile_y, "╞", base_st);
+                    let cold_st = Style::default().fg(Color::Blue).bg(hl_bg).add_modifier(Modifier::DIM);
+                    for dx in 0..tile_w {
+                        if tile_y > area.y {
+                            set_cell(buf, area, tile_x + dx, tile_y - 1, "░", cold_st);
+                        }
+                        if tile_y + tile_h < area.bottom() {
+                            set_cell(buf, area, tile_x + dx, tile_y + tile_h, "░", cold_st);
+                        }
                     }
                 }
             }
@@ -1547,7 +1692,25 @@ impl<'a> Widget for MapWidget<'a> {
             }
         }
 
-        // tiles + entidades
+        // Helper para calcular hl_bg de uma célula
+        let cell_hl_bg = |cell_x: u16, cell_y: u16| -> Color {
+            let is_goal = goal == Some((cell_x, cell_y));
+            let is_path = app.is_path(cell_x, cell_y);
+            let base_bg = tile_bg(app.ui.zoom, is_path, is_goal);
+            let mut hl = base_bg;
+            if app.game.selected_cell == Some((cell_x, cell_y)) {
+                hl = Color::Blue;
+            } else if app.ui.hover_cell == Some((cell_x, cell_y)) {
+                hl = Color::DarkGray;
+            } else if let Some((rx, ry, range, shape)) = range_focus {
+                if range_match(shape, cell_x, cell_y, rx, ry, range) {
+                    hl = Color::Blue;
+                }
+            }
+            hl
+        };
+
+        // ── PASSE 1: terreno + inimigos ──────────────────────────────────────
         for gy in 0..vp.vis_h {
             for gx in 0..vp.vis_w {
                 let cell_x = vp.view_x + gx;
@@ -1558,22 +1721,9 @@ impl<'a> Widget for MapWidget<'a> {
 
                 let is_goal = goal == Some((cell_x, cell_y));
                 let is_path = app.is_path(cell_x, cell_y);
+                let hl_bg = cell_hl_bg(cell_x, cell_y);
 
-                let base_bg = tile_bg(app.ui.zoom, is_path, is_goal);
-
-                // highlight (seleção/hover/range)
-                let mut hl_bg = base_bg;
-                if app.game.selected_cell == Some((cell_x, cell_y)) {
-                    hl_bg = Color::Blue;
-                } else if app.ui.hover_cell == Some((cell_x, cell_y)) {
-                    hl_bg = Color::DarkGray;
-                } else if let Some((rx, ry, range, shape)) = range_focus {
-                    if range_match(shape, cell_x, cell_y, rx, ry, range) {
-                        hl_bg = Color::Blue;
-                    }
-                }
-
-                // textura procedural do terreno (preenche o retângulo inteiro do tile)
+                // textura procedural do terreno
                 for dy in 0..vp.tile_h {
                     for dx in 0..vp.tile_w {
                         let (sym, fg) = if is_goal {
@@ -1607,42 +1757,7 @@ impl<'a> Widget for MapWidget<'a> {
                     }
                 }
 
-                // build preview (só no tile alvo)
-                if let Some(kind) = app.game.build_kind {
-                    if let Some((sx, sy)) = app.game.selected_cell {
-                        if (sx, sy) == (cell_x, cell_y) && app.can_build_at(cell_x, cell_y, kind) {
-                            let spr = assets::tower_sprite(kind, app.ui.zoom);
-                            let st = Style::default()
-                                .fg(tower_kind_color(kind))
-                                .bg(hl_bg)
-                                .add_modifier(Modifier::DIM);
-                            draw_sprite(buf, tile_x, tile_y, vp.tile_w, vp.tile_h, spr, st);
-                        }
-                    }
-                }
-
-                // torre real
-                if let Some(ti) = app.tower_index_at(cell_x, cell_y) {
-                    let t = &app.game.towers[ti];
-                    let spr = assets::tower_sprite(t.kind, app.ui.zoom);
-
-                    let st = Style::default()
-                        .fg(if t.level >= 4 {
-                            warn()
-                        } else {
-                            tower_kind_color(t.kind)
-                        })
-                        .bg(hl_bg)
-                        .add_modifier(Modifier::BOLD);
-
-                    draw_sprite(buf, tile_x, tile_y, vp.tile_w, vp.tile_h, spr, st);
-                    let anim = app.ui.anim_tick;
-                    let zoom = app.ui.zoom;
-                    let t = &app.game.towers[ti];
-                    draw_tower_anim(buf, area, t, tile_x, tile_y, vp.tile_w, vp.tile_h, zoom, anim, hl_bg, st);
-                }
-
-                // inimigo por cima
+                // inimigo
                 if let Some(kind) = app.enemy_kind_at(cell_x, cell_y) {
                     let spr = assets::enemy_sprite(kind, app.ui.zoom);
                     let st = Style::default()
@@ -1650,6 +1765,56 @@ impl<'a> Widget for MapWidget<'a> {
                         .bg(hl_bg)
                         .add_modifier(Modifier::BOLD);
                     draw_sprite(buf, tile_x, tile_y, vp.tile_w, vp.tile_h, spr, st);
+                }
+            }
+        }
+
+        // ── PASSE 2: torres (sobre o fundo — sem ser sobrescritas por shadow cells) ──
+        for gy in 0..vp.vis_h {
+            for gx in 0..vp.vis_w {
+                let cell_x = vp.view_x + gx;
+                let cell_y = vp.view_y + gy;
+                let tile_x = area.x + gx * vp.tile_w;
+                let tile_y = area.y + gy * vp.tile_h;
+                let hl_bg = cell_hl_bg(cell_x, cell_y);
+
+                // build preview (só na célula de origem)
+                if let Some(kind) = app.game.build_kind {
+                    if let Some((sx, sy)) = app.game.selected_cell {
+                        if (sx, sy) == (cell_x, cell_y) && app.can_build_at(cell_x, cell_y, kind) {
+                            let (fw, fh) = crate::app::App::tower_footprint(kind);
+                            let spr = assets::tower_sprite(kind, app.ui.zoom);
+                            let st = Style::default()
+                                .fg(tower_kind_color(kind))
+                                .bg(hl_bg)
+                                .add_modifier(Modifier::DIM);
+                            draw_sprite(buf, tile_x, tile_y, vp.tile_w * fw, vp.tile_h * fh, spr, st);
+                        }
+                    }
+                }
+
+                // torre real — só na célula de origem, sprite se expande para shadow cells
+                if let Some(ti) = app.tower_index_at(cell_x, cell_y) {
+                    let t = &app.game.towers[ti];
+                    if t.x == cell_x && t.y == cell_y {
+                        let (fw, fh) = crate::app::App::tower_footprint(t.kind);
+                        let sprite_w = vp.tile_w * fw;
+                        let sprite_h = vp.tile_h * fh;
+                        let spr = assets::tower_sprite(t.kind, app.ui.zoom);
+                        let st = Style::default()
+                            .fg(if t.level >= 4 {
+                                warn()
+                            } else {
+                                tower_kind_color(t.kind)
+                            })
+                            .bg(hl_bg)
+                            .add_modifier(Modifier::BOLD);
+                        draw_sprite(buf, tile_x, tile_y, sprite_w, sprite_h, spr, st);
+                        let anim = app.ui.anim_tick;
+                        let zoom = app.ui.zoom;
+                        let t = &app.game.towers[ti];
+                        draw_tower_anim(buf, area, t, tile_x, tile_y, sprite_w, sprite_h, zoom, anim, hl_bg, st);
+                    }
                 }
             }
         }
